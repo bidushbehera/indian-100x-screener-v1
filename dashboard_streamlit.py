@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+st.sidebar.caption(f"yfinance version: {yf.__version__}")
 
 # -----------------------------
 # PAGE CONFIG & TITLE
