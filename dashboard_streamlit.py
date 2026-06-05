@@ -409,12 +409,15 @@ def run_screen(
         rows.append(row)
         time.sleep(pause_seconds)
 
-    df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
 
     if only_pass:
         df = df[df["Pass"] == True]
 
-    df = df[df["Conviction"] >= min_conviction]
+    # Only filter by conviction when min_conviction > 0
+    if min_conviction > 0:
+        df = df[df["Conviction"] >= min_conviction]
+
     df = df.sort_values(
         ["Pass", "WeightedScore", "Conviction"],
         ascending=[False, False, False],
@@ -422,13 +425,12 @@ def run_screen(
 
     return df.reset_index(drop=True)
 
-
 # -----------------------------
 # SIDEBAR CONTROLS
 # -----------------------------
 st.sidebar.header("Controls")
 
-min_score = st.sidebar.slider("Minimum conviction score", 1, 5, 4)
+min_score = st.sidebar.slider("Minimum conviction score", 0, 5, 1)
 only_pass = st.sidebar.checkbox("Show only final pass names", value=True)
 pause_between_calls = st.sidebar.slider(
     "Pause between API calls (seconds)",
