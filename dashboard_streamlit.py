@@ -199,7 +199,53 @@ def load_stock_master() -> pd.DataFrame:
     except Exception as e:
         st.warning(f"Could not load stock_master.csv: {e}")
         return pd.DataFrame()
-        
+
+def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    From the raw NSE bhavcopy data, build a clean equity universe.
+
+    - Keeps only cash equities (FinInstrmTp == 'STK')
+    - Keeps only common equity series (SctySrs == 'EQ')
+    - Returns a small table with ticker, series, close, volume, and turnover
+    """
+    if nse_df is None or nse_df.empty:
+        return pd.DataFrame()
+
+    df = nse_df.copy()
+
+    # Basic safety: ensure required columns exist
+    required_cols = ["FinInstrmTp", "SctySrs", "TckrSymb", "ClsPric", "TtlTradgVol", "TtlTrfVal"]
+    for col in required_cols:
+        if col not in df.columns:
+            st.error(f"NSE CSV is missing required column: {col}")
+            return pd.DataFrame()
+
+    # Keep only stock instruments
+    df = df[df["FinInstrmTp"] == "STK"]
+
+    # Keep only equity series (EQ). Other series like GB (gold bonds) are dropped.
+    df = df[df["SctySrs"] == "EQ"]
+
+    # If nothing left, return empty
+    if df.empty:
+        return pd.DataFrame()
+
+    # Select and rename the key fields
+    df = df[["TckrSymb", "SctySrs", "ClsPric", "TtlTradgVol", "TtlTrfVal"]].copy()
+    df = df.rename(
+        columns={
+            "TckrSymb": "Ticker",
+            "SctySrs": "Series",
+            "ClsPric": "Close",
+            "TtlTradgVol": "Volume",
+            "TtlTrfVal": "Turnover"
+        }
+    )
+
+    # Optional: sort by turnover descending to see the most liquid names first
+    df = df.sort_values("Turnover", ascending=False).reset_index(drop=True)
+
+    return df
 
 def evaluate_stock(ticker: str) -> Dict[str, Any]:
     """
@@ -520,12 +566,21 @@ with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
     else:
         try:
             nse_prices_df = pd.read_csv(uploaded_nse_file)
-            st.write(f"NSE price file loaded with {len(nse_prices_df)} rows.")
+            st.write(f"NSE price file loaded with {len(nse_prices_df)} rows (all instruments).")
             st.dataframe(nse_prices_df.head(20), use_container_width=True)
+
+            # Build an equity-only universe from the raw NSE data
+            equity_universe_df = build_nse_equity_universe(nse_prices_df)
+            st.markdown("**Equity universe (FinInstrmTp == 'STK' and SctySrs == 'EQ')**")
+            if equity_universe_df.empty:
+                st.warning("No equity symbols (EQ series) found in this NSE file.")
+            else:
+                st.write(f"Equity universe has {len(equity_universe_df)} stock(s). Showing top 50 by turnover.")
+                st.dataframe(equity_universe_df.head(50), use_container_width=True)
         except Exception as e:
             st.error(f"Error reading NSE CSV: {e}")
             nse_prices_df = None
-
+            
 # -----------------------------
 # MAIN ACTION
 # -----------------------------
