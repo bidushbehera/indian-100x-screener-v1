@@ -171,6 +171,19 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
 
     return score  # 0–7
 
+def load_fundamentals_master() -> pd.DataFrame:
+    """
+    Load fundamentals_master.csv from the app directory.
+
+    Returns an empty DataFrame if the file is missing or unreadable.
+    """
+    try:
+        df = pd.read_csv("fundamentals_master.csv")
+        return df
+    except Exception as e:
+        st.warning(f"Could not load fundamentals_master.csv: {e}")
+        return pd.DataFrame()
+
 
 def evaluate_stock(ticker: str) -> Dict[str, Any]:
     """
@@ -447,6 +460,17 @@ pause_between_calls = st.sidebar.slider(
 
 st.sidebar.write(f"Universe size (V1 fixed): {len(DEFAULT_UNIVERSE)} tickers")
 
+# -----------------------------
+# FUNDAMENTALS MASTER PREVIEW
+# -----------------------------
+st.subheader("Fundamentals master (static upload)")
+with st.expander("Show fundamentals_master.csv", expanded=False):
+    fundamentals_df = load_fundamentals_master()
+    if fundamentals_df.empty:
+        st.info("fundamentals_master.csv not found or empty in the app directory.")
+    else:
+        st.write(f"Loaded {len(fundamentals_df)} stock(s) from fundamentals_master.csv")
+        st.dataframe(fundamentals_df, use_container_width=True)
 
 # -----------------------------
 # MAIN ACTION
