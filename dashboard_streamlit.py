@@ -605,6 +605,10 @@ if st.button("Run live screen"):
         tickers_to_screen = DEFAULT_UNIVERSE
         st.warning("No NSE equity universe available; falling back to DEFAULT_UNIVERSE list.")
 
+     # Load static master data
+    fundamentals_master_df = load_fundamentals_master()
+    stock_master_df = load_stock_master()
+
     rows = []
     with st.spinner("Fetching live market data..."):
         for ticker in tickers_to_screen:
@@ -614,12 +618,104 @@ if st.button("Run live screen"):
             time.sleep(0.2)
 
     df = pd.DataFrame(rows)
+        # Enrich with stock_master sector/subsector if available
+    if not df.empty and stock_master_df is not None and not stock_master_df.empty:
+        # Merge on Ticker
+        df = df.merge(
+            stock_master_df[["Ticker", "Sector", "SubSector"]],
+            on="Ticker",
+            how="left",
+            suffixes=("", "_stock")
+        )
+        # Prefer Sector/SubSector from stock_master where present
+        if "Sector_stock" in df.columns:
+            df["Sector"] = df["Sector_stock"].combine_first(df["Sector"])
+            df.drop(columns=["Sector_stock"], inplace=True)
+
+        # Enrich with fundamentals_master metrics if available
+    if not df.empty and fundamentals_master_df is not None and not fundamentals_master_df.empty:
+        fundamentals_cols = [
+            "Ticker",
+            "Latest_Year",
+            "ROE_Latest",
+            "ROCE_Latest",
+            "OPM_Latest",
+            "NPM_Latest",
+            "Revenue_CAGR_AllYears",
+            "PAT_CAGR_AllYears",
+            "ROCE_5Y_Avg",
+            "ROE_5Y_Avg",
+            "OPM_5Y_Avg",
+            "OneOff_ROCE_Flag",
+            "Asset_Quality_Risk_Flag",
+            "Reg_Risk_Flag",
+            "Gov_Risk_Flag",
+        ]
+        # Only keep columns that actually exist in the CSV
+        fundamentals_cols = [c for c in fundamentals_cols if c in fundamentals_master_df.columns]
+
+        df = df.merge(
+            fundamentals_master_df[fundamentals_cols],
+            on="Ticker",
+            how="left",
+            suffixes=("", "_fund")
+        )
+        
     if only_pass:
         df = df[df["Pass"] == True]
     df = df[df["Conviction"] >= min_score].sort_values(
         ["Pass", "WeightedScore", "Conviction"],
         ascending=[False, False, False]
     )
+
+    # Optional: basic column reordering so new fundamentals are grouped
+    preferred_order = [
+        "Ticker",
+        "Sector",
+        "Price",
+        "MCap_Cr",
+        "PE",
+        "PB",
+        "PEG",
+        "ROCE_pct",
+        "ROE_pct",
+        "ROA_pct",
+        "OPM_pct",
+        "RevGrowth_pct",
+        "EarnGrowth_pct",
+        "OCF_PAT",
+        "FCFYield_pct",
+        "Insider_pct",
+        "QualityScore_raw",
+        "L1_Val",
+        "L2_Prof",
+        "L3_CF",
+        "L4_Share",
+        "L5_Forensic",
+        "Conviction",
+        "WeightedScore",
+        "Pass",
+        # Fundamentals master fields
+        "Latest_Year",
+        "ROE_Latest",
+        "ROCE_Latest",
+        "OPM_Latest",
+        "NPM_Latest",
+        "Revenue_CAGR_AllYears",
+        "PAT_CAGR_AllYears",
+        "ROCE_5Y_Avg",
+        "ROE_5Y_Avg",
+        "OPM_5Y_Avg",
+        "OneOff_ROCE_Flag",
+        "Asset_Quality_Risk_Flag",
+        "Reg_Risk_Flag",
+        "Gov_Risk_Flag",
+    ]
+    # Keep only columns that actually exist, plus any extra columns at the end
+    existing_cols = [c for c in preferred_order if c in df.columns]
+    remaining_cols = [c for c in df.columns if c not in existing_cols]
+    df = df[existing_cols + remaining_cols]
+    
     st.success(f"Found {len(df)} stocks")
     st.dataframe(df, use_container_width=True)
     st.download_button(
