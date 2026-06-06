@@ -184,6 +184,19 @@ def load_fundamentals_master() -> pd.DataFrame:
         st.warning(f"Could not load fundamentals_master.csv: {e}")
         return pd.DataFrame()
 
+def load_stock_master() -> pd.DataFrame:
+    """
+    Load stock_master.csv from the app directory.
+
+    Returns an empty DataFrame if the file is missing or unreadable.
+    """
+    try:
+        df = pd.read_csv("stock_master.csv")
+        return df
+    except Exception as e:
+        st.warning(f"Could not load stock_master.csv: {e}")
+        return pd.DataFrame()
+        
 
 def evaluate_stock(ticker: str) -> Dict[str, Any]:
     """
@@ -471,6 +484,18 @@ with st.expander("Show fundamentals_master.csv", expanded=False):
     else:
         st.write(f"Loaded {len(fundamentals_df)} stock(s) from fundamentals_master.csv")
         st.dataframe(fundamentals_df, use_container_width=True)
+
+# -----------------------------
+# STOCK MASTER PREVIEW
+# -----------------------------
+st.subheader("Stock master (sector & subsector mappings)")
+with st.expander("Show stock_master.csv", expanded=False):
+    stock_master_df = load_stock_master()
+    if stock_master_df.empty:
+        st.info("stock_master.csv not found or empty in the app directory.")
+    else:
+        st.write(f"Loaded {len(stock_master_df)} stock(s) from stock_master.csv")
+        st.dataframe(stock_master_df, use_container_width=True)
 
 # -----------------------------
 # MAIN ACTION
