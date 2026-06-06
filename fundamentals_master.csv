@@ -1,1 +1,2 @@
 Ticker,Sector,SubSector,Latest_Year,ROE_Latest,ROCE_Latest,OPM_Latest,NPM_Latest,D_E_Latest,OCF_PAT_Latest,Revenue_CAGR_AllYears,PAT_CAGR_AllYears,ROCE_5Y_Avg,ROE_5Y_Avg,OPM_5Y_Avg,OneOff_ROCE_Flag,Asset_Quality_Risk_Flag,Reg_Risk_Flag,Gov_Risk_Flag
+POLYCAB,Capital Goods,Cables & Wires,2026,22%,33%,14%,9%,0.02,143%,20%,31%,28%,20%,13%,FALSE,FALSE,FALSE,FALSE
