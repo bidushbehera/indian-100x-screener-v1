@@ -5,6 +5,9 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+# Placeholder for NSE price data (uploaded weekly as CSV)
+nse_prices_df = None
+
 st.sidebar.caption(f"yfinance version: {yf.__version__}")
 
 # -----------------------------
@@ -459,6 +462,15 @@ st.sidebar.header("Controls")
 
 min_score = st.sidebar.slider("Minimum conviction score", 0, 5, 1)
 only_pass = st.sidebar.checkbox("Show only final pass names", value=True)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("NSE price data")
+
+uploaded_nse_file = st.sidebar.file_uploader(
+    "Upload NSE EOD CSV (weekly bhavcopy)",
+    type=["csv"],
+    help="Download the equity bhavcopy from NSE on Friday night, then upload it here."
+)
 pause_between_calls = st.sidebar.slider(
     "Pause between API calls (seconds)",
     min_value=0.0,
@@ -496,6 +508,23 @@ with st.expander("Show stock_master.csv", expanded=False):
     else:
         st.write(f"Loaded {len(stock_master_df)} stock(s) from stock_master.csv")
         st.dataframe(stock_master_df, use_container_width=True)
+
+# -----------------------------
+# NSE PRICE CSV PREVIEW
+# -----------------------------
+st.subheader("NSE price data (uploaded weekly)")
+with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
+    if uploaded_nse_file is None:
+        st.info("No NSE CSV uploaded yet. Use the file picker in the sidebar.")
+        nse_prices_df = None
+    else:
+        try:
+            nse_prices_df = pd.read_csv(uploaded_nse_file)
+            st.write(f"NSE price file loaded with {len(nse_prices_df)} rows.")
+            st.dataframe(nse_prices_df.head(20), use_container_width=True)
+        except Exception as e:
+            st.error(f"Error reading NSE CSV: {e}")
+            nse_prices_df = None
 
 # -----------------------------
 # MAIN ACTION
