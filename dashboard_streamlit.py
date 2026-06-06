@@ -7,6 +7,7 @@ import yfinance as yf
 
 # Placeholder for NSE price data (uploaded weekly as CSV)
 nse_prices_df = None
+equity_universe_df = None
 
 st.sidebar.caption(f"yfinance version: {yf.__version__}")
 
@@ -503,11 +504,17 @@ def run_screen(
 
 # -----------------------------
 # SIDEBAR CONTROLS
-# -----------------------------
-st.sidebar.header("Controls")
-
-min_score = st.sidebar.slider("Minimum conviction score", 0, 5, 1)
+# -----------------------------st.sidebar.header("Controls")
+min_score = st.sidebar.slider("Minimum conviction score", 1, 5, 4)
 only_pass = st.sidebar.checkbox("Show only final pass names", value=True)
+
+max_stocks = st.sidebar.number_input(
+    "Max stocks to screen (top by NSE turnover)",
+    min_value=10,
+    max_value=500,
+    value=50,
+    step=10
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("NSE price data")
@@ -585,31 +592,41 @@ with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
 # MAIN ACTION
 # -----------------------------
 if st.button("Run live screen"):
-    with st.spinner("Fetching live market data from Yahoo Finance via yfinance..."):
-        df_results = run_screen(
-            universe=DEFAULT_UNIVERSE,
-            min_conviction=min_score,
-            only_pass=only_pass,
-            pause_seconds=pause_between_calls,
-        )
+    # Decide which universe to use
+    if equity_universe_df is not None and not equity_universe_df.empty:
+        # Use the top N stocks by turnover from the NSE equity universe
+        base_universe = equity_universe_df.head(int(max_stocks))
+        universe_tickers = base_universe["Ticker"].astype(str).str.upper().tolist()
+        # Append .NS so yfinance understands these as NSE tickers
+        tickers_to_screen = [f"{t}.NS" for t in universe_tickers]
+        st.info(f"Using NSE equity universe: screening top {len(tickers_to_screen)} stock(s) by turnover.")
+    else:
+        # Fallback to the old hard-coded default universe
+        tickers_to_screen = DEFAULT_UNIVERSE
+        st.warning("No NSE equity universe available; falling back to DEFAULT_UNIVERSE list.")
 
-    st.success(f"Found {len(df_results)} stocks matching filters")
+    rows = []
+    with st.spinner("Fetching live market data..."):
+        for ticker in tickers_to_screen:
+            row = evaluate_stock(ticker)
+            if row:
+                rows.append(row)
+            time.sleep(0.2)
 
-    # Highlight errors inline if any
-    if "Error" in df_results.columns and df_results["Error"].notna().any():
-        st.warning(
-            "Some tickers returned errors from yfinance. Scroll right in the table "
-            "to see the 'Error' column for details."
-        )
-
-    st.dataframe(df_results, use_container_width=True)
-
+    df = pd.DataFrame(rows)
+    if only_pass:
+        df = df[df["Pass"] == True]
+    df = df[df["Conviction"] >= min_score].sort_values(
+        ["Pass", "WeightedScore", "Conviction"],
+        ascending=[False, False, False]
+    )
+    st.success(f"Found {len(df)} stocks")
+    st.dataframe(df, use_container_width=True)
     st.download_button(
         "Download CSV",
-        data=df_results.to_csv(index=False),
-        file_name="100x_screener_v1_results.csv",
-        mime="text/csv",
+        data=df.to_csv(index=False),
+        file_name="100x_screener_v3_results.csv",
+        mime="text/csv"
     )
-
 else:
     st.info("Click **Run live screen** to start.")
