@@ -101,7 +101,7 @@ CONFIG = {
 }
 
 
-    return score  # 0–7
+return score  # 0–7
 def load_fundamentals_master() -> pd.DataFrame:
     """
     Load fundamentals_master.csv from the app directory.
