@@ -420,6 +420,8 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             l5_data_missing,
         )
 
+        # OWNERSHIP-SOFTENING TEST:
+        # L4_Share is no longer required for final_pass.
         final_pass = bool(
             universe_mcap_pass
             and l2_prof
@@ -556,7 +558,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Fix 1 universe gate")
 st.sidebar.write(f"Turnover band: ₹{CONFIG['turnover_min_cr']:.0f} Cr to ₹{CONFIG['turnover_max_cr']:.0f} Cr")
 st.sidebar.write(f"Market cap band: ₹{CONFIG['mcap_min_cr']:.0f} Cr to ₹{CONFIG['mcap_max_cr']:.0f} Cr")
-st.sidebar.write("Promoter holding floor: 35%")
+st.sidebar.write("Promoter holding soft test: ownership still scored, but not a hard pass blocker")
 st.sidebar.write("Interest coverage floor: 4x")
 st.sidebar.write("L3 relaxation test: if L2 and L5 pass, L3 needs 1-of-4 instead of 2-of-4")
 
@@ -707,9 +709,9 @@ if st.button("Run live screen"):
 
     if only_pass:
         if show_datagap:
-            df = df[df["ScreenVerdict"].isin([VERDICT_PASS, VERDICT_PASS_DATAGAP])]
+            df = df[df["Pass"] == True]
         else:
-            df = df[df["ScreenVerdict"] == VERDICT_PASS]
+            df = df[(df["Pass"] == True) & (df["ScreenVerdict"] == VERDICT_PASS)]
 
     if min_score > 0:
         df = df[df["Conviction"] >= min_score]
@@ -721,7 +723,7 @@ if st.button("Run live screen"):
         VERDICT_FAIL_NODATA: 3,
     }
     df["_vsort"] = df["ScreenVerdict"].map(verdict_order).fillna(9).astype(int)
-    df = df.sort_values(["_vsort", "WeightedScore", "Conviction"], ascending=[True, False, False])
+    df = df.sort_values(["Pass", "_vsort", "WeightedScore", "Conviction"], ascending=[False, True, False, False])
     df.drop(columns=["_vsort"], inplace=True)
 
     preferred_order = [
@@ -774,6 +776,7 @@ if st.button("Run live screen"):
         "Reg_Risk_Flag",
         "Gov_Risk_Flag",
         "Error",
+        "SubSector",
     ]
     existing_cols = [c for c in preferred_order if c in df.columns]
     remaining_cols = [c for c in df.columns if c not in existing_cols]
@@ -796,7 +799,7 @@ if st.button("Run live screen"):
     st.download_button(
         "Download CSV",
         data=df.to_csv(index=False),
-        file_name="100x_screener_fix1_l3_relaxed_results.csv",
+        file_name="100x_screener_fix1_ownership_soft_results.csv",
         mime="text/csv",
     )
 else:
