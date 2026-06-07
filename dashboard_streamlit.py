@@ -8,6 +8,7 @@ import yfinance as yf
 # Placeholder for NSE price data (uploaded weekly as CSV)
 nse_prices_df = None
 equity_universe_df = None
+fundamentals_lookup = {}
 
 st.sidebar.caption(f"yfinance version: {yf.__version__}")
 
@@ -259,6 +260,9 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
 
     try:
         yf_ticker = yf.Ticker(ticker)
+        # Look up any precomputed fundamentals row from fundamentals_master
+        base_ticker = ticker.replace(".NS", "").upper()
+        fund_row = fundamentals_lookup.get(base_ticker)
         info = yf_ticker.info
 
         # -------------
@@ -435,6 +439,7 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             "Conviction": conviction,
             "WeightedScore": weighted_score,
             "Pass": final_pass,
+            "HasFundamentals": fund_row is not None,
             "Error": None,
         }
 
@@ -608,6 +613,18 @@ if st.button("Run live screen"):
      # Load static master data
     fundamentals_master_df = load_fundamentals_master()
     stock_master_df = load_stock_master()
+
+        # Build a lookup dictionary from fundamentals_master (keyed by base ticker)
+    global fundamentals_lookup
+    fundamentals_lookup = {}
+    if fundamentals_master_df is not None and not fundamentals_master_df.empty:
+        tmp = fundamentals_master_df.copy()
+        # Use uppercase ticker keys so lookups are case-insensitive
+        tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
+        fundamentals_lookup = {
+            row["TickerKey"]: row
+            for _, row in tmp.iterrows()
+        }
 
     rows = []
     with st.spinner("Fetching live market data..."):
