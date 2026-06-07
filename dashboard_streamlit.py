@@ -116,25 +116,18 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
     """
 
 def parse_percent_or_float(value):
-    """
-    Convert values like '22%' or '22.5%' or 22.5 into a fraction (0.225).
-    If value is already a small float (e.g., 0.22), it is returned as-is.
-    Returns None if the value cannot be parsed.
-    """
+    """Convert '22%' or 22 into a fraction like 0.22. Return None if not parseable."""
     if value is None or pd.isna(value):
         return None
 
-    # Handle strings like '22%' or '22.5'
+    # Handle strings
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
+        # Strip trailing %
         if text.endswith("%"):
             text = text[:-1].strip()
-            try:
-                return float(text) / 100.0
-            except Exception:
-                return None
         try:
             num = float(text)
         except Exception:
@@ -146,7 +139,7 @@ def parse_percent_or_float(value):
         except Exception:
             return None
 
-    # If the numeric value looks like a percentage (e.g. 22), convert to fraction
+    # If it looks like a percentage (e.g. 22), convert to fraction
     if num > 1.5:
         return num / 100.0
     return num
