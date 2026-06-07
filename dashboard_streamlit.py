@@ -116,7 +116,7 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
     """
 
 def parse_percent_or_float(value):
-    """Convert '22%' or 22 into a fraction like 0.22. Return None if not parseable."""
+    # Convert '22%' or 22 into a fraction like 0.22. Return None if not parseable.
     if value is None or pd.isna(value):
         return None
 
