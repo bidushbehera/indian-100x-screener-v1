@@ -391,21 +391,25 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         l2_prof = sum(l2_checks) >= 4
         l2_data_missing = sum(l2_available) < 4
 
-        # L3 cash flow / balance sheet
-        l3_checks = [
-            ocf_pat is not None and ocf_pat > CONFIG["ocf_pat_min"],
-            fcf_yield is not None and fcf_yield > CONFIG["fcf_yield_min"],
-            de_ratio is not None and de_ratio < CONFIG["de_max"],
-            interest_coverage is not None and interest_coverage > CONFIG["interest_coverage_min"],
-        ]
-        l3_available = [
-            ocf_pat is not None,
-            fcf_yield is not None,
-            de_ratio is not None,
-            interest_coverage is not None,
-        ]
-        l3_cf = sum(l3_checks) >= 2
-        l3_data_missing = sum(l3_available) < 2
+        # L3 cash flow / balance sheetl3_checks = [
+    ocf_pat is not None and ocf_pat > CONFIG["ocf_pat_min"],
+    fcf_yield is not None and fcf_yield > CONFIG["fcf_yield_min"],
+    de_ratio is not None and de_ratio < CONFIG["de_max"],
+    interest_coverage is not None and interest_coverage > CONFIG["interest_coverage_min"],
+]
+l3_available = [
+    ocf_pat is not None,
+    fcf_yield is not None,
+    de_ratio is not None,
+    interest_coverage is not None,
+]
+
+if l2_prof and l5_forensic:
+    l3_cf = sum(l3_checks) >= 1
+else:
+    l3_cf = sum(l3_checks) >= 2
+
+l3_data_missing = sum(l3_available) < 2
 
         # L4 ownership
         l4_share = insider is not None and insider > CONFIG["insider_min"]
