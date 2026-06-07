@@ -202,6 +202,23 @@ def load_stock_master() -> pd.DataFrame:
         st.warning(f"Could not load stock_master.csv: {e}")
         return pd.DataFrame()
 
+def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
+    """
+    Rebuild the in-memory fundamentals_lookup dictionary
+    from fundamentals_master_df. Keys are uppercase tickers.
+    """
+    global fundamentals_lookup
+    fundamentals_lookup = {}
+    if fundamentals_master_df is None or fundamentals_master_df.empty:
+        return
+
+    tmp = fundamentals_master_df.copy()
+    tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
+    fundamentals_lookup = {
+        row["TickerKey"]: row
+        for _, row in tmp.iterrows()
+    }
+
 def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     """
     From the raw NSE bhavcopy data, build a clean equity universe.
@@ -610,13 +627,12 @@ if st.button("Run live screen"):
         tickers_to_screen = DEFAULT_UNIVERSE
         st.warning("No NSE equity universe available; falling back to DEFAULT_UNIVERSE list.")
 
-         # Load static master data
+    # Load static master data
     fundamentals_master_df = load_fundamentals_master()
     stock_master_df = load_stock_master()
 
-    # Build a lookup dictionary from fundamentals_master (keyed by base ticker)
-    global fundamentals_lookup
-    fundamentals_lookup = {}
+    # Rebuild lookup dictionary from fundamentals_master (keyed by base ticker)
+    rebuild_fundamentals_lookup(fundamentals_master_df)
     if fundamentals_master_df is not None and not fundamentals_master_df.empty:
         tmp = fundamentals_master_df.copy()
         # Use uppercase ticker keys so lookups are case-insensitive
