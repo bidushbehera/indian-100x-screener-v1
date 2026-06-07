@@ -614,12 +614,22 @@ with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
 # MAIN ACTION
 # -----------------------------
 if st.button("Run live screen"):
+    # Rebuild NSE equity universe from the uploaded file (do not rely on preview state)
+    if uploaded_nse_file is not None:
+        try:
+            raw_nse_df = pd.read_csv(uploaded_nse_file)
+            equity_universe_df_local = build_nse_equity_universe(raw_nse_df)
+        except Exception as e:
+            st.error(f"Error rebuilding NSE equity universe: {e}")
+            equity_universe_df_local = None
+    else:
+        equity_universe_df_local = None
+
     # Decide which universe to use
-    if equity_universe_df is not None and not equity_universe_df.empty:
+    if equity_universe_df_local is not None and not equity_universe_df_local.empty:
         # Use the top N stocks by turnover from the NSE equity universe
-        base_universe = equity_universe_df.head(int(max_stocks))
+        base_universe = equity_universe_df_local.head(int(max_stocks))
         universe_tickers = base_universe["Ticker"].astype(str).str.upper().tolist()
-        # Append .NS so yfinance understands these as NSE tickers
         tickers_to_screen = [f"{t}.NS" for t in universe_tickers]
         st.info(f"Using NSE equity universe: screening top {len(tickers_to_screen)} stock(s) by turnover.")
     else:
@@ -630,6 +640,8 @@ if st.button("Run live screen"):
     # Load static master data
     fundamentals_master_df = load_fundamentals_master()
     stock_master_df = load_stock_master()
+    rebuild_fundamentals_lookup(fundamentals_master_df)
+    ...
 
     # Rebuild lookup dictionary from fundamentals_master (keyed by base ticker)
     rebuild_fundamentals_lookup(fundamentals_master_df)
