@@ -610,11 +610,11 @@ if st.button("Run live screen"):
         tickers_to_screen = DEFAULT_UNIVERSE
         st.warning("No NSE equity universe available; falling back to DEFAULT_UNIVERSE list.")
 
-     # Load static master data
+         # Load static master data
     fundamentals_master_df = load_fundamentals_master()
     stock_master_df = load_stock_master()
 
-        # Build a lookup dictionary from fundamentals_master (keyed by base ticker)
+    # Build a lookup dictionary from fundamentals_master (keyed by base ticker)
     global fundamentals_lookup
     fundamentals_lookup = {}
     if fundamentals_master_df is not None and not fundamentals_master_df.empty:
@@ -625,7 +625,7 @@ if st.button("Run live screen"):
             row["TickerKey"]: row
             for _, row in tmp.iterrows()
         }
-
+        
     rows = []
     with st.spinner("Fetching live market data..."):
         for ticker in tickers_to_screen:
