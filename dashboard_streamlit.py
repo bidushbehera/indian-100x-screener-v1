@@ -8,7 +8,7 @@ import yfinance as yf
 # Placeholder for NSE price data (uploaded weekly as CSV)
 nse_prices_df = None
 equity_universe_df = None
-fundamentals_lookup = {}
+fundamentals_lookup: Dict[str, Any] = {}
 
 st.sidebar.caption(f"yfinance version: {yf.__version__}")
 
@@ -16,7 +16,7 @@ st.sidebar.caption(f"yfinance version: {yf.__version__}")
 # PAGE CONFIG & TITLE
 # -----------------------------
 st.set_page_config(
-    page_title="100X Screener V1 – Indian Equities",
+    page_title="100X Screener V1 - Indian Equities",
     layout="wide",
 )
 
@@ -25,7 +25,6 @@ st.caption(
     "V1 = Single-page Streamlit app using free Yahoo Finance data via yfinance. "
     "Acts as a narrowing engine, not a buy/sell signal."
 )
-
 
 # -----------------------------
 # V1 SCOPE (FOR USER CLARITY)
@@ -57,11 +56,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-DEFAULT_UNIVERSE = [
+DEFAULT_UNIVERSE: List[str] = [
     "LLOYDSME.NS",
     "POLYCAB.NS",
     "DEEPAKNTR.NS",
@@ -75,7 +73,7 @@ DEFAULT_UNIVERSE = [
 ]
 
 # Thresholds are kept close to your original spec
-CONFIG = {
+CONFIG: Dict[str, Any] = {
     # Valuation
     "pe_max": 20.0,
     "peg_max": 1.0,
@@ -100,11 +98,84 @@ CONFIG = {
     "quality_min_raw": 5,   # out of 7 signals (see approx_quality_score)
 }
 
+# -----------------------------
+# HELPER FUNCTIONS
+# -----------------------------
+def safe(info: Dict[str, Any], key: str, default=None):
+    """Robustly fetch a field from yfinance .info."""
+    v = info.get(key, default)
+    if v in (None, "N/A", "NaN"):
+        return default
+    return v
 
-        return score  # 0–7
+
+def parse_percent_or_float(value):
+    """Convert '22%' or 22 into a fraction like 0.22. Return None if not parseable."""
+    if value is None or pd.isna(value):
+        return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        try:
+            num = float(text)
+        except Exception:
+            return None
+    else:
+        try:
+            num = float(value)
+        except Exception:
+            return None
+
+    # Treat typical "percentage" values (like 22) as 22%
+    if num > 1.5:
+        return num / 100.0
+    return num
+
+
+def approx_quality_score(info: Dict[str, Any]) -> int:
+    """Approximate Piotroski-like forensic quality score using snapshot fields."""
+    score = 0
+
+    ni = safe(info, "netIncomeToCommon") or 0
+    ocf = safe(info, "operatingCashflow") or 0
+    roa = safe(info, "returnOnAssets") or 0  # fraction
+    ltd = safe(info, "longTermDebt") or 0
+    ta = safe(info, "totalAssets") or 0
+    cr = safe(info, "currentRatio") or 0
+    gm = safe(info, "grossMargins") or 0     # fraction
+    rg = safe(info, "revenueGrowth") or 0    # fraction
+
+    # 1. Net income > 0
+    if ni > 0:
+        score += 1
+    # 2. Operating cashflow > 0
+    if ocf > 0:
+        score += 1
+    # 3. ROA > 5%
+    if roa and roa > 0.05:
+        score += 1
+    # 4. OCF > net income
+    if ocf > ni > 0:
+        score += 1
+    # 5. Long-term debt / total assets < 0.3
+    if ta > 0 and (ltd / ta) < 0.3:
+        score += 1
+    # 6. Current ratio > 1.5
+    if cr and cr > 1.5:
+        score += 1
+    # 7. Gross margin & revenue growth both healthy
+    if gm and gm > 0.2 and rg and rg > 0:
+        score += 1
+
+    return score  # 0–7
+
+
 def load_fundamentals_master() -> pd.DataFrame:
-    """
-    Load fundamentals_master.csv from the app directory.
+    """Load fundamentals_master.csv from the app directory.
 
     Returns an empty DataFrame if the file is missing or unreadable.
     """
@@ -115,9 +186,9 @@ def load_fundamentals_master() -> pd.DataFrame:
         st.warning(f"Could not load fundamentals_master.csv: {e}")
         return pd.DataFrame()
 
+
 def load_stock_master() -> pd.DataFrame:
-    """
-    Load stock_master.csv from the app directory.
+    """Load stock_master.csv from the app directory.
 
     Returns an empty DataFrame if the file is missing or unreadable.
     """
@@ -128,11 +199,9 @@ def load_stock_master() -> pd.DataFrame:
         st.warning(f"Could not load stock_master.csv: {e}")
         return pd.DataFrame()
 
+
 def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
-    """
-    Rebuild the in-memory fundamentals_lookup dictionary
-    from fundamentals_master_df. Keys are uppercase tickers.
-    """
+    """Rebuild in-memory fundamentals_lookup dict from fundamentals_master_df."""
     global fundamentals_lookup
     fundamentals_lookup = {}
     if fundamentals_master_df is None or fundamentals_master_df.empty:
@@ -140,42 +209,36 @@ def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
 
     tmp = fundamentals_master_df.copy()
     tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
-    fundamentals_lookup = {
-        row["TickerKey"]: row
-        for _, row in tmp.iterrows()
-    }
+    fundamentals_lookup = {row["TickerKey"]: row for _, row in tmp.iterrows()}
+
 
 def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    From the raw NSE bhavcopy data, build a clean equity universe.
-
-    - Keeps only cash equities (FinInstrmTp == 'STK')
-    - Keeps only common equity series (SctySrs == 'EQ')
-    - Returns a small table with ticker, series, close, volume, and turnover
-    """
+    """Build a clean equity universe from raw NSE bhavcopy data."""
     if nse_df is None or nse_df.empty:
         return pd.DataFrame()
 
     df = nse_df.copy()
 
-    # Basic safety: ensure required columns exist
-    required_cols = ["FinInstrmTp", "SctySrs", "TckrSymb", "ClsPric", "TtlTradgVol", "TtlTrfVal"]
+    required_cols = [
+        "FinInstrmTp",
+        "SctySrs",
+        "TckrSymb",
+        "ClsPric",
+        "TtlTradgVol",
+        "TtlTrfVal",
+    ]
     for col in required_cols:
         if col not in df.columns:
             st.error(f"NSE CSV is missing required column: {col}")
             return pd.DataFrame()
 
-    # Keep only stock instruments
+    # Keep only stock instruments and EQ series
     df = df[df["FinInstrmTp"] == "STK"]
-
-    # Keep only equity series (EQ). Other series like GB (gold bonds) are dropped.
     df = df[df["SctySrs"] == "EQ"]
 
-    # If nothing left, return empty
     if df.empty:
         return pd.DataFrame()
 
-    # Select and rename the key fields
     df = df[["TckrSymb", "SctySrs", "ClsPric", "TtlTradgVol", "TtlTrfVal"]].copy()
     df = df.rename(
         columns={
@@ -183,50 +246,39 @@ def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
             "SctySrs": "Series",
             "ClsPric": "Close",
             "TtlTradgVol": "Volume",
-            "TtlTrfVal": "Turnover"
+            "TtlTrfVal": "Turnover",
         }
     )
 
-    # Optional: sort by turnover descending to see the most liquid names first
     df = df.sort_values("Turnover", ascending=False).reset_index(drop=True)
-
     return df
 
+
 def evaluate_stock(ticker: str) -> Dict[str, Any]:
-    """
-    Evaluate a single stock.
-
-    - Uses yfinance.Ticker.info for all fields (free, unofficial API; fragile for India).
-    - Computes L1–L5, Conviction, WeightedScore, and final Pass flag.
-    - Returns a dict row; on hard failures, returns a row with Pass=False and an Error field.
-    """
-
+    """Evaluate a single stock and return a dict row."""
     try:
         yf_ticker = yf.Ticker(ticker)
-        # Look up any precomputed fundamentals row from fundamentals_master
         base_ticker = ticker.replace(".NS", "").upper()
         fund_row = fundamentals_lookup.get(base_ticker)
         info = yf_ticker.info
 
-        # -------------
         # Raw fields
-        # -------------
         pe = safe(info, "trailingPE")
         pb = safe(info, "priceToBook")
         ev_ebitda = safe(info, "enterpriseToEbitda")
 
-        roe = safe(info, "returnOnEquity")      # fraction
-        roa = safe(info, "returnOnAssets")      # fraction
-        opm = safe(info, "operatingMargins")    # fraction
-        revg = safe(info, "revenueGrowth")      # fraction
-        earng = safe(info, "earningsGrowth")    # fraction (e.g., 0.2 = 20%)
+        roe = safe(info, "returnOnEquity")
+        roa = safe(info, "returnOnAssets")
+        opm = safe(info, "operatingMargins")
+        revg = safe(info, "revenueGrowth")
+        earng = safe(info, "earningsGrowth")
 
         fcf = safe(info, "freeCashflow")
         ocf = safe(info, "operatingCashflow")
         ni = safe(info, "netIncomeToCommon")
 
-        de = safe(info, "debtToEquity")         # assume already a ratio (e.g., 0.5, 1.2)
-        insider = safe(info, "heldPercentInsiders")  # fraction, where available
+        de = safe(info, "debtToEquity")
+        insider = safe(info, "heldPercentInsiders")
 
         mcap_raw = safe(info, "marketCap") or 0
         price = safe(info, "regularMarketPrice") or safe(info, "currentPrice")
@@ -236,49 +288,36 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         ta = safe(info, "totalAssets")
         current_liab = safe(info, "totalCurrentLiabilities")
 
-        # -------------
         # Derived metrics
-        # -------------
-        # Market cap in INR crores (assuming Yahoo uses local currency for NSE tickers)
         mcap_cr = mcap_raw / 1e7 if mcap_raw else None
 
-        # ROCE approximation using EBIT / (Total Assets - Current Liabilities)
         roce = None
         if ebit and ta and current_liab is not None:
             capital_employed = ta - current_liab
             if capital_employed > 0:
                 roce = ebit / capital_employed
 
-        # PEG: use earningsGrowth as fraction and convert to percent for classic PEG definition.
         peg = None
         if pe and earng and earng > 0:
-            # earnings growth (in %) = earng * 100
             peg = pe / (earng * 100.0)
 
-        # OCF / PAT
         ocf_pat = None
         if ocf and ni and ni > 0:
             ocf_pat = ocf / ni
 
-        # FCF yield (fraction of market cap)
         fcf_yield = None
         if fcf and mcap_raw:
             fcf_yield = fcf / mcap_raw
 
-        # Debt/Equity: assume data is already ratio; clamp absurdly large values
         de_ratio = None
         if de is not None and de >= 0:
             de_ratio = float(de)
             if de_ratio > 10:
-                # Treat extreme numbers as unreliable; mark as None so L3 doesn't rely on them.
                 de_ratio = None
 
-        # Approximate forensic / quality score
         quality_raw = approx_quality_score(info)
 
-        # -------------
-        # L1–L5 PASS/FAIL
-        # -------------
+        # L1 Valuation
         l1_val = sum(
             [
                 pe is not None and pe < CONFIG["pe_max"],
@@ -290,40 +329,38 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             ]
         ) >= 3
 
-        # -----------------------------
-        # Override L2 inputs with Excel fundamentals (if available)
-        # -----------------------------
+        # L2 overrides from fundamentals_master, if available
         if fund_row is not None:
-            # ROE override
             if "ROE_Latest" in fund_row.index:
                 roe_parsed = parse_percent_or_float(fund_row["ROE_Latest"])
                 if roe_parsed is not None:
                     roe = roe_parsed
 
-            # ROCE override
             if "ROCE_Latest" in fund_row.index:
                 roce_parsed = parse_percent_or_float(fund_row["ROCE_Latest"])
                 if roce_parsed is not None:
                     roce = roce_parsed
 
-            # OPM override
             if "OPM_Latest" in fund_row.index:
                 opm_parsed = parse_percent_or_float(fund_row["OPM_Latest"])
                 if opm_parsed is not None:
                     opm = opm_parsed
 
-            # Revenue growth override (use CAGR)
             if "Revenue_CAGR_AllYears" in fund_row.index:
-                revg_parsed = parse_percent_or_float(fund_row["Revenue_CAGR_AllYears"])
+                revg_parsed = parse_percent_or_float(
+                    fund_row["Revenue_CAGR_AllYears"]
+                )
                 if revg_parsed is not None:
                     revg = revg_parsed
 
-            # Earnings growth override (use PAT CAGR)
             if "PAT_CAGR_AllYears" in fund_row.index:
-                earng_parsed = parse_percent_or_float(fund_row["PAT_CAGR_AllYears"])
+                earng_parsed = parse_percent_or_float(
+                    fund_row["PAT_CAGR_AllYears"]
+                )
                 if earng_parsed is not None:
                     earng = earng_parsed
-        
+
+        # L2 Profitability
         l2_prof = sum(
             [
                 roce is not None and roce > CONFIG["roce_min"],
@@ -335,6 +372,7 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             ]
         ) >= 4
 
+        # L3 Cash flow / balance sheet
         l3_cf = sum(
             [
                 ocf_pat is not None and ocf_pat > CONFIG["ocf_pat_min"],
@@ -343,19 +381,16 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             ]
         ) >= 2
 
-        # L4: ownership quality (proxy using heldPercentInsiders only)
+        # L4 Ownership
         l4_share = insider is not None and insider > CONFIG["insider_min"]
 
-        # L5: forensic quality using approximate Piotroski-style score
+        # L5 Forensic quality
         l5_forensic = quality_raw >= CONFIG["quality_min_raw"]
 
         conviction = sum([l1_val, l2_prof, l3_cf, l4_share, l5_forensic])
-
         final_pass = bool(l2_prof and l5_forensic and conviction >= 4)
 
-        # -------------
-        # WEIGHTED SCORE
-        # -------------
+        # Weighted score
         weighted_score = 0
 
         # Valuation — 20 points
@@ -363,9 +398,7 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         weighted_score += 5 if peg is not None and peg < 1 else 0
         weighted_score += 5 if ev_ebitda is not None and ev_ebitda < 12 else 0
         weighted_score += 3 if pb is not None and pb < 3 else 0
-        weighted_score += 2 if (
-            mcap_cr is not None and 200 <= mcap_cr <= 5000
-        ) else 0
+        weighted_score += 2 if mcap_cr is not None and 200 <= mcap_cr <= 5000 else 0
 
         # Profitability — 30 points
         weighted_score += 8 if roce is not None and roce > 0.20 else 0
@@ -380,11 +413,10 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         weighted_score += 6 if fcf_yield is not None and fcf_yield > 0.03 else 0
         weighted_score += 6 if de_ratio is not None and de_ratio < 0.5 else 0
 
-        # Ownership — 10 points (proxy only)
+        # Ownership — 10 points
         weighted_score += 5 if l4_share else 0
 
         # Forensic quality — 20 points
-        # Scale raw 0–7 score into 0–10 points (rounded).
         quality_points = round(10 * quality_raw / 7) if quality_raw is not None else 0
         if quality_points > 10:
             quality_points = 10
@@ -439,7 +471,6 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             "OCF_PAT": None,
             "FCFYield_pct": None,
             "Insider_pct": None,
-            "Piotroski": None,
             "QualityScore_raw": None,
             "L1_Val": False,
             "L2_Prof": False,
@@ -453,43 +484,11 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             "Error": str(e),
         }
 
-
-def run_screen(
-    universe: List[str], min_conviction: int, only_pass: bool, pause_seconds: float = 0.2
-) -> pd.DataFrame:
-    """
-    Run the live screen over a small universe.
-
-    NOTE:
-    - This is designed for a **small** list of tickers in V1.
-    - For larger universes (NSE 500), this will be too slow and may hit Yahoo rate limits.
-    """
-    rows = []
-    for ticker in universe:
-        row = evaluate_stock(ticker)
-        rows.append(row)
-        time.sleep(pause_seconds)
-
-        df = pd.DataFrame(rows)
-
-    if only_pass:
-        df = df[df["Pass"] == True]
-
-    # Only filter by conviction when min_conviction > 0
-    if min_conviction > 0:
-        df = df[df["Conviction"] >= min_conviction]
-
-    df = df.sort_values(
-        ["Pass", "WeightedScore", "Conviction"],
-        ascending=[False, False, False],
-    )
-
-    return df.reset_index(drop=True)
-
 # -----------------------------
 # SIDEBAR CONTROLS
-# -----------------------------st.sidebar.header("Controls")
-min_score = st.sidebar.slider("Minimum conviction score", 1, 5, 4)
+# -----------------------------
+st.sidebar.header("Controls")
+min_score = st.sidebar.slider("Minimum conviction score", 0, 5, 4)
 only_pass = st.sidebar.checkbox("Show only final pass names", value=True)
 
 max_stocks = st.sidebar.number_input(
@@ -497,7 +496,7 @@ max_stocks = st.sidebar.number_input(
     min_value=10,
     max_value=500,
     value=50,
-    step=10
+    step=10,
 )
 
 st.sidebar.markdown("---")
@@ -506,8 +505,9 @@ st.sidebar.subheader("NSE price data")
 uploaded_nse_file = st.sidebar.file_uploader(
     "Upload NSE EOD CSV (weekly bhavcopy)",
     type=["csv"],
-    help="Download the equity bhavcopy from NSE on Friday night, then upload it here."
+    help="Download the equity bhavcopy from NSE on Friday night, then upload it here.",
 )
+
 pause_between_calls = st.sidebar.slider(
     "Pause between API calls (seconds)",
     min_value=0.0,
@@ -557,29 +557,33 @@ with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
     else:
         try:
             nse_prices_df = pd.read_csv(uploaded_nse_file)
-            st.write(f"NSE price file loaded with {len(nse_prices_df)} rows (all instruments).")
+            st.write(
+                f"NSE price file loaded with {len(nse_prices_df)} rows (all instruments)."
+            )
             st.dataframe(nse_prices_df.head(20), use_container_width=True)
 
-            # Build an equity-only universe from the raw NSE data
+            # Build equity-only universe
             equity_universe_df = build_nse_equity_universe(nse_prices_df)
             st.markdown("**Equity universe (FinInstrmTp == 'STK' and SctySrs == 'EQ')**")
             if equity_universe_df.empty:
                 st.warning("No equity symbols (EQ series) found in this NSE file.")
             else:
-                st.write(f"Equity universe has {len(equity_universe_df)} stock(s). Showing top 50 by turnover.")
+                st.write(
+                    f"Equity universe has {len(equity_universe_df)} stock(s). "
+                    "Showing top 50 by turnover."
+                )
                 st.dataframe(equity_universe_df.head(50), use_container_width=True)
         except Exception as e:
             st.error(f"Error reading NSE CSV: {e}")
             nse_prices_df = None
-            
+
 # -----------------------------
 # MAIN ACTION
 # -----------------------------
 if st.button("Run live screen"):
-    # Rebuild NSE equity universe from the uploaded file (do not rely on preview state)
+    # Rebuild NSE equity universe from uploaded file (fresh read)
     if uploaded_nse_file is not None:
         try:
-            # Reset file pointer because it has already been read in the preview
             uploaded_nse_file.seek(0)
             raw_nse_df = pd.read_csv(uploaded_nse_file)
             equity_universe_df_local = build_nse_equity_universe(raw_nse_df)
@@ -591,57 +595,47 @@ if st.button("Run live screen"):
 
     # Decide which universe to use
     if equity_universe_df_local is not None and not equity_universe_df_local.empty:
-        # Use the top N stocks by turnover from the NSE equity universe
         base_universe = equity_universe_df_local.head(int(max_stocks))
         universe_tickers = base_universe["Ticker"].astype(str).str.upper().tolist()
         tickers_to_screen = [f"{t}.NS" for t in universe_tickers]
-        st.info(f"Using NSE equity universe: screening top {len(tickers_to_screen)} stock(s) by turnover.")
+        st.info(
+            f"Using NSE equity universe: screening top {len(tickers_to_screen)} stock(s) by turnover."
+        )
     else:
-        # Fallback to the old hard-coded default universe
         tickers_to_screen = DEFAULT_UNIVERSE
-        st.warning("No NSE equity universe available; falling back to DEFAULT_UNIVERSE list.")
+        st.warning(
+            "No NSE equity universe available; falling back to DEFAULT_UNIVERSE list."
+        )
 
     # Load static master data
     fundamentals_master_df = load_fundamentals_master()
     stock_master_df = load_stock_master()
     rebuild_fundamentals_lookup(fundamentals_master_df)
-    ...
 
-    # Rebuild lookup dictionary from fundamentals_master (keyed by base ticker)
-    rebuild_fundamentals_lookup(fundamentals_master_df)
-    if fundamentals_master_df is not None and not fundamentals_master_df.empty:
-        tmp = fundamentals_master_df.copy()
-        # Use uppercase ticker keys so lookups are case-insensitive
-        tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
-        fundamentals_lookup = {
-            row["TickerKey"]: row
-            for _, row in tmp.iterrows()
-        }
-        
-    rows = []
+    # Run live screen
+    rows: List[Dict[str, Any]] = []
     with st.spinner("Fetching live market data..."):
         for ticker in tickers_to_screen:
             row = evaluate_stock(ticker)
             if row:
                 rows.append(row)
-            time.sleep(0.2)
+            time.sleep(pause_between_calls)
 
     df = pd.DataFrame(rows)
-        # Enrich with stock_master sector/subsector if available
+
+    # Enrich with stock_master sector/subsector if available
     if not df.empty and stock_master_df is not None and not stock_master_df.empty:
-        # Merge on Ticker
         df = df.merge(
             stock_master_df[["Ticker", "Sector", "SubSector"]],
             on="Ticker",
             how="left",
-            suffixes=("", "_stock")
+            suffixes=("", "_stock"),
         )
-        # Prefer Sector/SubSector from stock_master where present
         if "Sector_stock" in df.columns:
             df["Sector"] = df["Sector_stock"].combine_first(df["Sector"])
             df.drop(columns=["Sector_stock"], inplace=True)
 
-        # Enrich with fundamentals_master metrics if available
+    # Enrich with fundamentals_master metrics if available
     if not df.empty and fundamentals_master_df is not None and not fundamentals_master_df.empty:
         fundamentals_cols = [
             "Ticker",
@@ -660,27 +654,30 @@ if st.button("Run live screen"):
             "Reg_Risk_Flag",
             "Gov_Risk_Flag",
         ]
-        # Only keep columns that actually exist in the CSV
-        fundamentals_cols = [c for c in fundamentals_cols if c in fundamentals_master_df.columns]
+        fundamentals_cols = [
+            c for c in fundamentals_cols if c in fundamentals_master_df.columns
+        ]
 
         df = df.merge(
             fundamentals_master_df[fundamentals_cols],
             on="Ticker",
             how="left",
-            suffixes=("", "_fund")
+            suffixes=("", "_fund"),
         )
-        
+
+    # Filters
     if only_pass:
         df = df[df["Pass"] == True]
     if min_score > 0:
         df = df[df["Conviction"] >= min_score]
 
+    # Sort
     df = df.sort_values(
-    ["Pass", "WeightedScore", "Conviction"],
-    ascending=[False, False, False]
+        ["Pass", "WeightedScore", "Conviction"],
+        ascending=[False, False, False],
     )
 
-    # Optional: basic column reordering so new fundamentals are grouped
+    # Column ordering
     preferred_order = [
         "Ticker",
         "Sector",
@@ -723,18 +720,17 @@ if st.button("Run live screen"):
         "Reg_Risk_Flag",
         "Gov_Risk_Flag",
     ]
-    # Keep only columns that actually exist, plus any extra columns at the end
     existing_cols = [c for c in preferred_order if c in df.columns]
     remaining_cols = [c for c in df.columns if c not in existing_cols]
     df = df[existing_cols + remaining_cols]
-    
+
     st.success(f"Found {len(df)} stocks")
     st.dataframe(df, use_container_width=True)
     st.download_button(
         "Download CSV",
         data=df.to_csv(index=False),
         file_name="100x_screener_v3_results.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
 else:
     st.info("Click **Run live screen** to start.")
