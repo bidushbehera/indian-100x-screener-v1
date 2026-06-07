@@ -114,6 +114,43 @@ def safe(info: Dict[str, Any], key: str, default=None):
 
 def approx_quality_score(info: Dict[str, Any]) -> int:
     """
+
+def parse_percent_or_float(value):
+    """
+    Convert values like '22%' or '22.5%' or 22.5 into a fraction (0.225).
+    If value is already a small float (e.g., 0.22), it is returned as-is.
+    Returns None if the value cannot be parsed.
+    """
+    if value is None or pd.isna(value):
+        return None
+
+    # Handle strings like '22%' or '22.5'
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("%"):
+            text = text[:-1].strip()
+            try:
+                return float(text) / 100.0
+            except Exception:
+                return None
+        try:
+            num = float(text)
+        except Exception:
+            return None
+    else:
+        # Already numeric
+        try:
+            num = float(value)
+        except Exception:
+            return None
+
+    # If the numeric value looks like a percentage (e.g. 22), convert to fraction
+    if num > 1.5:
+        return num / 100.0
+    return num
+
     Approximate Piotroski-like forensic quality score using *only* snapshot fields
     available in yfinance.info.
 
@@ -364,6 +401,40 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             ]
         ) >= 3
 
+        # -----------------------------
+        # Override L2 inputs with Excel fundamentals (if available)
+        # -----------------------------
+        if fund_row is not None:
+            # ROE override
+            if "ROE_Latest" in fund_row.index:
+                roe_parsed = parse_percent_or_float(fund_row["ROE_Latest"])
+                if roe_parsed is not None:
+                    roe = roe_parsed
+
+            # ROCE override
+            if "ROCE_Latest" in fund_row.index:
+                roce_parsed = parse_percent_or_float(fund_row["ROCE_Latest"])
+                if roce_parsed is not None:
+                    roce = roce_parsed
+
+            # OPM override
+            if "OPM_Latest" in fund_row.index:
+                opm_parsed = parse_percent_or_float(fund_row["OPM_Latest"])
+                if opm_parsed is not None:
+                    opm = opm_parsed
+
+            # Revenue growth override (use CAGR)
+            if "Revenue_CAGR_AllYears" in fund_row.index:
+                revg_parsed = parse_percent_or_float(fund_row["Revenue_CAGR_AllYears"])
+                if revg_parsed is not None:
+                    revg = revg_parsed
+
+            # Earnings growth override (use PAT CAGR)
+            if "PAT_CAGR_AllYears" in fund_row.index:
+                earng_parsed = parse_percent_or_float(fund_row["PAT_CAGR_AllYears"])
+                if earng_parsed is not None:
+                    earng = earng_parsed
+        
         l2_prof = sum(
             [
                 roce is not None and roce > CONFIG["roce_min"],
