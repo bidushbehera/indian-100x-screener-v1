@@ -671,9 +671,9 @@ if st.button("Run live screen"):
         )
         
     if only_pass:
-    df = df[df["Pass"] == True]
+        df = df[df["Pass"] == True]
     if min_score > 0:
-    df = df[df["Conviction"] >= min_score]
+        df = df[df["Conviction"] >= min_score]
 
     df = df.sort_values(
     ["Pass", "WeightedScore", "Conviction"],
