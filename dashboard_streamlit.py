@@ -44,9 +44,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
 DEFAULT_UNIVERSE: List[str] = [
     "LLOYDSME.NS",
     "POLYCAB.NS",
@@ -61,38 +58,27 @@ DEFAULT_UNIVERSE: List[str] = [
 ]
 
 CONFIG: Dict[str, Any] = {
-    # Fix 1 universe gate
     "turnover_min_cr": 1.0,
     "turnover_max_cr": 50.0,
     "mcap_min_cr": 200.0,
     "mcap_max_cr": 5000.0,
-
-    # Valuation
     "pe_max": 20.0,
     "peg_max": 1.2,
     "ev_ebitda_max": 12.0,
     "pb_max": 3.0,
-
-    # Profitability / growth
     "roce_min": 0.20,
     "roe_min": 0.15,
     "roa_min": 0.08,
     "opm_min": 0.12,
     "rev_growth_min": 0.12,
     "earn_growth_min": 0.15,
-
-    # Cash flow / balance sheet
     "ocf_pat_min": 0.8,
     "fcf_yield_min": 0.03,
     "de_max": 0.5,
     "interest_coverage_min": 4.0,
-
-    # Governance / ownership
     "insider_min": 0.35,
     "insider_strong": 0.50,
     "insider_excellent": 0.60,
-
-    # Forensic quality
     "quality_min_raw": 5,
 }
 
@@ -102,9 +88,6 @@ VERDICT_FAIL_GENUINE = "FAIL (Genuine)"
 VERDICT_FAIL_NODATA = "FAIL (Insufficient data)"
 
 
-# -----------------------------
-# HELPERS
-# -----------------------------
 def safe(info: Dict[str, Any], key: str, default=None):
     v = info.get(key, default)
     if v in (None, "N/A", "NaN"):
@@ -324,7 +307,6 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
 
         quality_raw = approx_quality_score(info)
 
-        # Override profitability/growth fields with curated fundamentals, if available
         if fund_row is not None:
             if "ROE_Latest" in fund_row.index:
                 v = parse_percent_or_float(fund_row["ROE_Latest"])
@@ -347,13 +329,11 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
                 if v is not None:
                     earng = v
 
-        # Universe mcap gate (Fix 1)
         universe_mcap_pass = (
             mcap_cr is not None
             and CONFIG["mcap_min_cr"] <= mcap_cr <= CONFIG["mcap_max_cr"]
         )
 
-        # L1 valuation
         l1_checks = [
             pe is not None and pe < CONFIG["pe_max"],
             peg is not None and peg < CONFIG["peg_max"],
@@ -371,7 +351,6 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         l1_val = sum(l1_checks) >= 3
         l1_data_missing = sum(l1_available) < 3
 
-        # L2 profitability / growth
         l2_checks = [
             roce is not None and roce > CONFIG["roce_min"],
             roe is not None and roe > CONFIG["roe_min"],
@@ -391,31 +370,6 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         l2_prof = sum(l2_checks) >= 4
         l2_data_missing = sum(l2_available) < 4
 
-        # L3 cash flow / balance sheetl3_checks = [
-    ocf_pat is not None and ocf_pat > CONFIG["ocf_pat_min"],
-    fcf_yield is not None and fcf_yield > CONFIG["fcf_yield_min"],
-    de_ratio is not None and de_ratio < CONFIG["de_max"],
-    interest_coverage is not None and interest_coverage > CONFIG["interest_coverage_min"],
-]
-l3_available = [
-    ocf_pat is not None,
-    fcf_yield is not None,
-    de_ratio is not None,
-    interest_coverage is not None,
-]
-
-if l2_prof and l5_forensic:
-    l3_cf = sum(l3_checks) >= 1
-else:
-    l3_cf = sum(l3_checks) >= 2
-
-l3_data_missing = sum(l3_available) < 2
-
-        # L4 ownership
-        l4_share = insider is not None and insider > CONFIG["insider_min"]
-        l4_data_missing = insider is None
-
-        # L5 forensic quality
         l5_fields_present = sum(
             [
                 safe(info, "netIncomeToCommon") is not None,
@@ -429,6 +383,27 @@ l3_data_missing = sum(l3_available) < 2
         )
         l5_forensic = quality_raw >= CONFIG["quality_min_raw"]
         l5_data_missing = l5_fields_present < 4
+
+        l3_checks = [
+            ocf_pat is not None and ocf_pat > CONFIG["ocf_pat_min"],
+            fcf_yield is not None and fcf_yield > CONFIG["fcf_yield_min"],
+            de_ratio is not None and de_ratio < CONFIG["de_max"],
+            interest_coverage is not None and interest_coverage > CONFIG["interest_coverage_min"],
+        ]
+        l3_available = [
+            ocf_pat is not None,
+            fcf_yield is not None,
+            de_ratio is not None,
+            interest_coverage is not None,
+        ]
+        if l2_prof and l5_forensic:
+            l3_cf = sum(l3_checks) >= 1
+        else:
+            l3_cf = sum(l3_checks) >= 2
+        l3_data_missing = sum(l3_available) < 2
+
+        l4_share = insider is not None and insider > CONFIG["insider_min"]
+        l4_data_missing = insider is None
 
         conviction = sum([l1_val, l2_prof, l3_cf, l4_share, l5_forensic])
 
@@ -445,7 +420,6 @@ l3_data_missing = sum(l3_available) < 2
             l5_data_missing,
         )
 
-        # Final pass = must pass universe gate + strong profitability + forensic + conviction >= 4
         final_pass = bool(
             universe_mcap_pass
             and l2_prof
@@ -454,15 +428,12 @@ l3_data_missing = sum(l3_available) < 2
         )
 
         weighted_score = 0
-
-        # Valuation — 20 pts
         weighted_score += 5 if pe is not None and pe < CONFIG["pe_max"] else 0
         weighted_score += 5 if peg is not None and peg < CONFIG["peg_max"] else 0
         weighted_score += 5 if ev_ebitda is not None and ev_ebitda < CONFIG["ev_ebitda_max"] else 0
         weighted_score += 3 if pb is not None and pb < CONFIG["pb_max"] else 0
         weighted_score += 2 if universe_mcap_pass else 0
 
-        # Profitability — 30 pts
         weighted_score += 8 if roce is not None and roce > CONFIG["roce_min"] else 0
         weighted_score += 6 if roe is not None and roe > CONFIG["roe_min"] else 0
         weighted_score += 4 if roa is not None and roa > CONFIG["roa_min"] else 0
@@ -470,13 +441,11 @@ l3_data_missing = sum(l3_available) < 2
         weighted_score += 4 if revg is not None and revg > CONFIG["rev_growth_min"] else 0
         weighted_score += 4 if earng is not None and earng > CONFIG["earn_growth_min"] else 0
 
-        # Cash flow / balance sheet — 20 pts
         weighted_score += 6 if ocf_pat is not None and ocf_pat > CONFIG["ocf_pat_min"] else 0
         weighted_score += 6 if fcf_yield is not None and fcf_yield > CONFIG["fcf_yield_min"] else 0
         weighted_score += 4 if de_ratio is not None and de_ratio < CONFIG["de_max"] else 0
         weighted_score += 4 if interest_coverage is not None and interest_coverage > CONFIG["interest_coverage_min"] else 0
 
-        # Ownership — 10 pts
         if insider is not None:
             if insider >= CONFIG["insider_excellent"]:
                 weighted_score += 10
@@ -485,7 +454,6 @@ l3_data_missing = sum(l3_available) < 2
             elif insider >= CONFIG["insider_min"]:
                 weighted_score += 5
 
-        # Forensic quality — 20 pts
         quality_points = round(10 * quality_raw / 7) if quality_raw is not None else 0
         weighted_score += min(quality_points, 10)
 
@@ -568,9 +536,6 @@ l3_data_missing = sum(l3_available) < 2
         }
 
 
-# -----------------------------
-# SIDEBAR CONTROLS
-# -----------------------------
 st.sidebar.header("Controls")
 min_score = st.sidebar.slider("Minimum conviction score", 0, 5, 4)
 only_pass = st.sidebar.checkbox("Show only final pass names", value=True)
@@ -593,6 +558,7 @@ st.sidebar.write(f"Turnover band: ₹{CONFIG['turnover_min_cr']:.0f} Cr to ₹{C
 st.sidebar.write(f"Market cap band: ₹{CONFIG['mcap_min_cr']:.0f} Cr to ₹{CONFIG['mcap_max_cr']:.0f} Cr")
 st.sidebar.write("Promoter holding floor: 35%")
 st.sidebar.write("Interest coverage floor: 4x")
+st.sidebar.write("L3 relaxation test: if L2 and L5 pass, L3 needs 1-of-4 instead of 2-of-4")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("NSE price data")
@@ -622,9 +588,6 @@ with st.expander("ScreenVerdict legend", expanded=False):
 """
     )
 
-# -----------------------------
-# FUNDAMENTALS MASTER PREVIEW
-# -----------------------------
 st.subheader("Fundamentals master (static upload)")
 with st.expander("Show fundamentals_master.csv", expanded=False):
     fundamentals_df = load_fundamentals_master()
@@ -634,9 +597,6 @@ with st.expander("Show fundamentals_master.csv", expanded=False):
         st.write(f"Loaded {len(fundamentals_df)} stock(s) from fundamentals_master.csv")
         st.dataframe(fundamentals_df, use_container_width=True)
 
-# -----------------------------
-# STOCK MASTER PREVIEW
-# -----------------------------
 st.subheader("Stock master (sector & subsector mappings)")
 with st.expander("Show stock_master.csv", expanded=False):
     stock_master_df = load_stock_master()
@@ -646,9 +606,6 @@ with st.expander("Show stock_master.csv", expanded=False):
         st.write(f"Loaded {len(stock_master_df)} stock(s) from stock_master.csv")
         st.dataframe(stock_master_df, use_container_width=True)
 
-# -----------------------------
-# NSE PRICE CSV PREVIEW
-# -----------------------------
 st.subheader("NSE price data (uploaded weekly)")
 with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
     if uploaded_nse_file is None:
@@ -674,9 +631,6 @@ with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
             st.error(f"Error reading NSE CSV: {e}")
             nse_prices_df = None
 
-# -----------------------------
-# MAIN ACTION
-# -----------------------------
 if st.button("Run live screen"):
     if uploaded_nse_file is not None:
         try:
@@ -842,7 +796,7 @@ if st.button("Run live screen"):
     st.download_button(
         "Download CSV",
         data=df.to_csv(index=False),
-        file_name="100x_screener_fix1_results.csv",
+        file_name="100x_screener_fix1_l3_relaxed_results.csv",
         mime="text/csv",
     )
 else:
