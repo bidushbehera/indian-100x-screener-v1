@@ -612,11 +612,12 @@ with st.expander("Show uploaded NSE EOD CSV preview", expanded=False):
             
 # -----------------------------
 # MAIN ACTION
-# -----------------------------
-if st.button("Run live screen"):
+# -----------------------------if st.button("Run live screen"):
     # Rebuild NSE equity universe from the uploaded file (do not rely on preview state)
     if uploaded_nse_file is not None:
         try:
+            # Reset file pointer because it has already been read in the preview
+            uploaded_nse_file.seek(0)
             raw_nse_df = pd.read_csv(uploaded_nse_file)
             equity_universe_df_local = build_nse_equity_universe(raw_nse_df)
         except Exception as e:
