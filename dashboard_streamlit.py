@@ -525,9 +525,9 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        # Fail-soft: still return a row so user can see the problem ticker.
+        base_ticker = ticker.replace(".NS", "")
         return {
-            "Ticker": ticker.replace(".NS", ""),
+            "Ticker": base_ticker,
             "Sector": None,
             "Price": None,
             "MCap_Cr": None,
@@ -543,6 +543,7 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             "OCF_PAT": None,
             "FCFYield_pct": None,
             "Insider_pct": None,
+            "Piotroski": None,
             "QualityScore_raw": None,
             "L1_Val": False,
             "L2_Prof": False,
@@ -552,6 +553,7 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
             "Conviction": 0,
             "WeightedScore": 0,
             "Pass": False,
+            "HasFundamentals": False,
             "Error": str(e),
         }
 
