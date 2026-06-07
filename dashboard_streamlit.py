@@ -101,111 +101,7 @@ CONFIG = {
 }
 
 
-# -----------------------------
-# HELPER FUNCTIONS
-# -----------------------------
-def safe(info: Dict[str, Any], key: str, default=None):
-    """Robustly fetch a field from yfinance .info."""
-    v = info.get(key, default)
-    if v in (None, "N/A", "NaN"):
-        return default
-    return v
-
-
-def approx_quality_score(info: Dict[str, Any]) -> int:
-    """
-
-def parse_percent_or_float(value):
-    # Convert '22%' or 22 into a fraction like 0.22. Return None if not parseable.
-    if value is None or pd.isna(value):
-        return None
-
-    # Handle strings
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        # Strip trailing %
-        if text.endswith("%"):
-            text = text[:-1].strip()
-        try:
-            num = float(text)
-        except Exception:
-            return None
-    else:
-        # Already numeric
-        try:
-            num = float(value)
-        except Exception:
-            return None
-
-    # If it looks like a percentage (e.g. 22), convert to fraction
-    if num > 1.5:
-        return num / 100.0
-    return num
-
-    Approximate Piotroski-like forensic quality score using *only* snapshot fields
-    available in yfinance.info.
-
-    IMPORTANT (V1 honesty):
-    - This is NOT a true Piotroski F-score.
-    - True Piotroski requires year-over-year changes in profitability, leverage,
-      liquidity, and efficiency using historical statements.
-    - Here we use 7 static signals as a rough proxy.
-
-    Signals (0/1 each, max 7):
-    1. Net income > 0
-    2. Operating cashflow > 0
-    3. ROA > 5%
-    4. OCF > Net income
-    5. Long-term debt / total assets < 0.3
-    6. Current ratio > 1.5
-    7. Gross margin & revenue growth both healthy
-
-    We combine margin and growth into a single point to keep max at 7.
-    """
-
-    score = 0
-
-    ni = safe(info, "netIncomeToCommon") or 0
-    ocf = safe(info, "operatingCashflow") or 0
-    roa = safe(info, "returnOnAssets") or 0  # fraction
-    ltd = safe(info, "longTermDebt") or 0
-    ta = safe(info, "totalAssets") or 0
-    cr = safe(info, "currentRatio") or 0
-    gm = safe(info, "grossMargins") or 0     # fraction
-    rg = safe(info, "revenueGrowth") or 0    # fraction
-
-    # 1. Net income > 0
-    if ni > 0:
-        score += 1
-
-    # 2. Operating cashflow > 0
-    if ocf > 0:
-        score += 1
-
-    # 3. ROA > 5%
-    if roa and roa > 0.05:
-        score += 1
-
-    # 4. OCF > net income
-    if ocf > ni > 0:
-        score += 1
-
-    # 5. Long-term debt / total assets < 0.3
-    if ta > 0 and (ltd / ta) < 0.3:
-        score += 1
-
-    # 6. Current ratio > 1.5
-    if cr and cr > 1.5:
-        score += 1
-
-    # 7. Gross margin & revenue growth both healthy → 1 combined point
-    if gm and gm > 0.2 and rg and rg > 0:
-        score += 1
-
     return score  # 0–7
-
 def load_fundamentals_master() -> pd.DataFrame:
     """
     Load fundamentals_master.csv from the app directory.
@@ -775,10 +671,13 @@ if st.button("Run live screen"):
         )
         
     if only_pass:
-        df = df[df["Pass"] == True]
-    df = df[df["Conviction"] >= min_score].sort_values(
-        ["Pass", "WeightedScore", "Conviction"],
-        ascending=[False, False, False]
+    df = df[df["Pass"] == True]
+    if min_score > 0:
+    df = df[df["Conviction"] >= min_score]
+
+    df = df.sort_values(
+    ["Pass", "WeightedScore", "Conviction"],
+    ascending=[False, False, False]
     )
 
     # Optional: basic column reordering so new fundamentals are grouped
