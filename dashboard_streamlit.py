@@ -88,7 +88,12 @@ def parse_percent_or_float(value) -> Optional[float]:
             num = float(value)
         except Exception:
             return None
-    remeToCommon") or 0
+    return num / 100.0 if num > 1.5 else num
+
+
+def approx_quality_score(info: Dict[str, Any]) -> int:
+    score = 0
+    ni  = safe(info, "netIncomeToCommon") or 0
     ocf = safe(info, "operatingCashflow") or 0
     roa = safe(info, "returnOnAssets") or 0
     ltd = safe(info, "longTermDebt") or 0
@@ -96,15 +101,21 @@ def parse_percent_or_float(value) -> Optional[float]:
     cr  = safe(info, "currentRatio") or 0
     gm  = safe(info, "grossMargins") or 0
     rg  = safe(info, "revenueGrowth") or 0
-    if ni > 0:                             score += 1
-    if ocf > 0:                            score += 1
-    if roa and roa > 0.05:                 score += 1
-    if ocf > ni > 0:                       score += 1
-    if ta > 0 and (ltd / ta) < 0.3:       score += 1
-    if cr and cr > 1.5:                    score += 1
-    if gm and gm > 0.2 and rg and rg > 0: score += 1
+    if ni > 0:
+        score += 1
+    if ocf > 0:
+        score += 1
+    if roa and roa > 0.05:
+        score += 1
+    if ocf > ni > 0:
+        score += 1
+    if ta > 0 and (ltd / ta) < 0.3:
+        score += 1
+    if cr and cr > 1.5:
+        score += 1
+    if gm and gm > 0.2 and rg and rg > 0:
+        score += 1
     return score
-
 
 def normalize_company_name(name: str) -> str:
     if name is None:
