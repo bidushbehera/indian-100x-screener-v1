@@ -1,79 +1,22 @@
+import re
 import time
-from typing import Dict, Any, List, Optional
+import difflib
+from typing import Dict, Any, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-# -----------------------------
-# TICKER → NSE COMPANY NAME MAP
-# Exact names as they appear in the CF-Shareholding-Pattern CSV (COMPANY column)
-# Add more entries here as you expand the universe
-# -----------------------------
-TICKER_TO_COMPANY: Dict[str, str] = {
-    "POLYCAB":   "Polycab India Limited",
-    "TANLA":     "Tanla Platforms Limited",
-    "KPITTECH":  "KPIT Technologies Limited",
-    "CDSL":      "Central Depository Services (India) Limited",
-    "CAMS":      "Computer Age Management Services Limited",
-    "IRCTC":     "Indian Railway Catering And Tourism Corporation Limited",
-    "CGPOWER":   "CG Power and Industrial Solutions Limited",
-    "DEEPAKNTR": "Deepak Nitrite Limited",
-    "OLECTRA":   "Olectra Greentech Limited",
-    "LLOYDSME":  "Lloyds Metals And Energy Limited",
-}
-
-# NSE shareholding CSV exact column names (from CF-Shareholding-Pattern-equities CSV)
-SH_COL_COMPANY   = "COMPANY"
-SH_COL_PROMOTER  = "PROMOTER & PROMOTER GROUP (A)"
-SH_COL_PUBLIC    = "PUBLIC (B)"
-SH_COL_EMP_TRUST = "SHARES HELD BY EMPLOYEE TRUSTS (C2)"
-SH_COL_STATUS    = "STATUS"
-SH_COL_AS_ON     = "AS ON DATE"
-SH_COL_REVISION  = "REVISION DATE"
-SH_COL_ACTION    = "ACTION"
-
-nse_prices_df      = None
-equity_universe_df = None
-fundamentals_lookup: Dict[str, Any]  = {}
-shareholding_lookup: Dict[str, Dict] = {}
-
-st.sidebar.caption(f"yfinance version: {yf.__version__}")
-
 st.set_page_config(page_title="100X Screener V1 - Indian Equities", layout="wide")
-
 st.title("100X Screener V1 — Indian Equity Live Screener")
 st.caption(
-    "V1 = Single-page Streamlit app using free Yahoo Finance data via yfinance. "
-    "Acts as a narrowing engine, not a buy/sell signal."
+    "Attachment-driven screener using NSE bhavcopy + NSE shareholding CSV + "
+    "optional uploaded master files. Manual overrides are only a last-resort exception layer."
 )
 
-with st.expander("What this V1 actually does / does NOT do", expanded=False):
-    st.markdown("""
-- **Implements (V1 reality):**
-  - Screens NSE stocks using `yfinance.Ticker.info` plus your curated `fundamentals_master.csv`.
-  - L4 Ownership uses NSE official shareholding CSV (promoter ≥ 40%) when uploaded, else falls back to yfinance insiderHoldingsPercent.
-  - Computes L1–L5, Conviction, WeightedScore, and a **ScreenVerdict** that distinguishes genuine failures from data-gap failures.
-  - Displays results in a table with CSV download.
-
-- **Does *not* implement (future versions only):**
-  - Watchlist persistence or score history.
-  - Alerts (email / Telegram / WhatsApp).
-  - Backtests.
-  - Pledge-level shareholding or detailed promoter analytics.
-  - Alternative data providers beyond yfinance.
-""")
-
-st.markdown(
-    "<sub>yfinance is an unofficial wrapper around Yahoo Finance; coverage and reliability "
-    "especially for Indian fundamentals and shareholding data are limited. "
-    "L4 Ownership is more reliable when you upload the NSE shareholding CSV.</sub>",
-    unsafe_allow_html=True,
-)
-
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
+# =========================================================
+# CONFIG
+# =========================================================
 DEFAULT_UNIVERSE: List[str] = [
     "LLOYDSME.NS", "POLYCAB.NS", "DEEPAKNTR.NS", "CGPOWER.NS", "TANLA.NS",
     "KPITTECH.NS", "CDSL.NS", "CAMS.NS", "IRCTC.NS", "OLECTRA.NS",
@@ -95,9 +38,10 @@ CONFIG: Dict[str, Any] = {
     "ocf_pat_min":     0.80,
     "fcf_yield_min":   0.03,
     "de_max":          0.50,
-    "promoter_min":    0.40,
-    "insider_min":     0.40,
+    "promoter_min":    40.0,
+    "insider_min":      0.40,
     "quality_min_raw":  5,
+    "name_match_cutoff": 0.88,
 }
 
 VERDICT_PASS         = "PASS"
@@ -105,10 +49,20 @@ VERDICT_PASS_DATAGAP = "PASS (Data gaps present)"
 VERDICT_FAIL_GENUINE = "FAIL (Genuine)"
 VERDICT_FAIL_NODATA  = "FAIL (Insufficient data)"
 
+# =========================================================
+# LAST-RESORT EXCEPTION LAYER ONLY
+# Keep this tiny. This is NOT the primary mapping source.
+# =========================================================
+MANUAL_NAME_OVERRIDES: Dict[str, str] = {
+    # "HINDZINC": "Hindustan Zinc Limited",
+}
 
-# -----------------------------
-# HELPER FUNCTIONS
-# -----------------------------
+fundamentals_lookup: Dict[str, Any] = {}
+symbol_company_master: Dict[str, str] = {}
+
+# =========================================================
+# HELPERS
+# =========================================================
 def safe(info: Dict[str, Any], key: str, default=None):
     v = info.get(key, default)
     if v in (None, "N/A", "NaN"):
@@ -134,12 +88,7 @@ def parse_percent_or_float(value) -> Optional[float]:
             num = float(value)
         except Exception:
             return None
-    return num / 100.0 if num > 1.5 else num
-
-
-def approx_quality_score(info: Dict[str, Any]) -> int:
-    score = 0
-    ni  = safe(info, "netIncomeToCommon") or 0
+    remeToCommon") or 0
     ocf = safe(info, "operatingCashflow") or 0
     roa = safe(info, "returnOnAssets") or 0
     ltd = safe(info, "longTermDebt") or 0
@@ -157,19 +106,50 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
     return score
 
 
+def normalize_company_name(name: str) -> str:
+    if name is None:
+        return ""
+    s = str(name).strip().lower()
+    s = s.replace("\ufeff", "").replace('"', "").replace("'", "")
+    s = s.replace("&", " and ")
+    s = s.replace(" co.", " company ")
+    s = s.replace(" co ", " company ")
+    s = s.replace("(india)", " india ")
+    s = s.replace(" india ltd", " india limited")
+    s = s.replace(" ltd.", " limited")
+    s = s.replace(" ltd", " limited")
+    s = s.replace(" pvt.", " private")
+    s = s.replace(" pvt ", " private ")
+    s = s.replace(" priv ", " private ")
+    s = s.replace(" technologies", " technology")
+    s = s.replace(" solutions", " solution")
+    s = s.replace(" services", " service")
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    tokens_to_drop = {
+        "limited", "ltd", "company", "co", "private", "public",
+        "india", "industries", "industry", "corporation", "corp"
+    }
+    parts = [p for p in s.split() if p not in tokens_to_drop]
+    return " ".join(parts).strip()
+
+
+def score_name_similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, normalize_company_name(a), normalize_company_name(b)).ratio()
+
+
 def load_fundamentals_master() -> pd.DataFrame:
     try:
         return pd.read_csv("fundamentals_master.csv")
-    except Exception as e:
-        st.warning(f"Could not load fundamentals_master.csv: {e}")
+    except Exception:
         return pd.DataFrame()
 
 
 def load_stock_master() -> pd.DataFrame:
     try:
         return pd.read_csv("stock_master.csv")
-    except Exception as e:
-        st.warning(f"Could not load stock_master.csv: {e}")
+    except Exception:
         return pd.DataFrame()
 
 
@@ -179,101 +159,173 @@ def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
     if fundamentals_master_df is None or fundamentals_master_df.empty:
         return
     tmp = fundamentals_master_df.copy()
-    tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
+    if "Ticker" not in tmp.columns:
+        return
+    tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper().str.strip()
     fundamentals_lookup = {row["TickerKey"]: row for _, row in tmp.iterrows()}
 
 
-def build_shareholding_lookup(shareholding_df: pd.DataFrame) -> Dict[str, Dict]:
-    """
-    Parses the NSE CF-Shareholding-Pattern CSV.
-    Exact column names:
-      COMPANY | PROMOTER & PROMOTER GROUP (A) | PUBLIC (B) |
-      SHARES HELD BY EMPLOYEE TRUSTS (C2) | STATUS | AS ON DATE | REVISION DATE | ACTION
-    Returns dict keyed by base ticker.
-    """
-    lookup: Dict[str, Dict] = {}
-    if shareholding_df is None or shareholding_df.empty:
-        return lookup
+def detect_company_name_column(df: pd.DataFrame) -> Optional[str]:
+    cols = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
+    df.columns = cols
+    preferred = ["CompanyName", "Company", "COMPANY", "Issuer Name", "NAME OF COMPANY", "Security Name"]
+    for col in preferred:
+        if col in cols:
+            return col
+    return None
 
+
+def detect_symbol_column(df: pd.DataFrame) -> Optional[str]:
+    cols = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
+    df.columns = cols
+    preferred = ["Ticker", "Symbol", "SYMBOL", "TckrSymb", "Security Code", "Code"]
+    for col in preferred:
+        if col in cols:
+            return col
+    return None
+
+
+def build_symbol_company_master(
+    stock_master_df: pd.DataFrame,
+    bhavcopy_df: pd.DataFrame,
+    fundamentals_df: pd.DataFrame
+) -> Tuple[Dict[str, str], pd.DataFrame]:
+    mapping_rows = []
+
+    def ingest(df: pd.DataFrame, source_name: str):
+        if df is None or df.empty:
+            return
+        tmp = df.copy()
+        symbol_col = detect_symbol_column(tmp)
+        company_col = detect_company_name_column(tmp)
+        if symbol_col and company_col:
+            sub = tmp[[symbol_col, company_col]].copy()
+            sub.columns = ["Ticker", "CompanyName"]
+            sub["Ticker"] = sub["Ticker"].astype(str).str.upper().str.strip()
+            sub["CompanyName"] = sub["CompanyName"].astype(str).str.strip()
+            sub["Source"] = source_name
+            mapping_rows.append(sub)
+
+    ingest(stock_master_df, "stock_master")
+    ingest(fundamentals_df, "fundamentals_master")
+    ingest(bhavcopy_df, "bhavcopy")
+
+    if not mapping_rows:
+        return {}, pd.DataFrame()
+
+    master = pd.concat(mapping_rows, ignore_index=True)
+    master = master.dropna(subset=["Ticker", "CompanyName"])
+    master = master[(master["Ticker"] != "") & (master["CompanyName"] != "")]
+    master = master.drop_duplicates(subset=["Ticker", "CompanyName"])
+
+    source_rank = {"stock_master": 1, "fundamentals_master": 2, "bhavcopy": 3}
+    master["rank"] = master["Source"].map(source_rank).fillna(99)
+    master = master.sort_values(["Ticker", "rank", "CompanyName"])
+    best = master.drop_duplicates(subset=["Ticker"], keep="first").copy()
+
+    mapping = dict(zip(best["Ticker"], best["CompanyName"]))
+    return mapping, best.drop(columns=["rank"])
+
+
+def build_shareholding_company_index(shareholding_df: pd.DataFrame) -> pd.DataFrame:
     df = shareholding_df.copy()
     df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
 
-    if SH_COL_COMPANY not in df.columns:
-        st.error(
-            f"Shareholding CSV missing expected column '{SH_COL_COMPANY}'. "
-            f"Found columns: {list(df.columns[:6])}"
-        )
-        return lookup
+    required = [
+        "COMPANY",
+        "PROMOTER & PROMOTER GROUP (A)",
+        "PUBLIC (B)",
+        "SHARES HELD BY EMPLOYEE TRUSTS (C2)",
+        "STATUS",
+        "AS ON DATE",
+        "REVISION DATE",
+        "ACTION",
+    ]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        st.error(f"Shareholding CSV missing required columns: {missing}")
+        return pd.DataFrame()
 
-    def normalise(s: str) -> str:
-        return s.lower().strip()
+    df["CompanyNameRaw"] = df["COMPANY"].astype(str).str.strip()
+    df["CompanyNameNorm"] = df["CompanyNameRaw"].apply(normalize_company_name)
+    return df
 
-    company_map: Dict[str, pd.Series] = {}
-    for _, row in df.iterrows():
-        cname = str(row[SH_COL_COMPANY]).strip()
-        company_map[normalise(cname)] = row
 
-    for ticker, company_name in TICKER_TO_COMPANY.items():
-        norm_name = normalise(company_name)
-        row = company_map.get(norm_name)
+def resolve_symbol_to_shareholding(
+    ticker: str,
+    company_master_name: Optional[str],
+    shareholding_company_df: pd.DataFrame,
+    manual_overrides: Dict[str, str],
+) -> Dict[str, Any]:
+    ticker = str(ticker).upper().strip()
 
-        if row is None:
-            for ckey, crow in company_map.items():
-                if norm_name[:25] in ckey or ckey[:25] in norm_name:
-                    row = crow
-                    break
+    if ticker in manual_overrides:
+        target = manual_overrides[ticker]
+        exact = shareholding_company_df[
+            shareholding_company_df["CompanyNameRaw"].str.lower() == str(target).lower()
+        ]
+        if not exact.empty:
+            row = exact.iloc[0]
+            return {
+                "ResolvedCompanyName": row["CompanyNameRaw"],
+                "MappingMethod": "manual_override",
+                "MatchScore": 1.0,
+                "Row": row,
+            }
 
-        if row is None:
-            continue
+    if company_master_name and isinstance(company_master_name, str) and company_master_name.strip():
+        raw = company_master_name.strip()
 
-        def pct_val(col_name: str) -> Optional[float]:
-            if col_name not in row.index:
-                return None
-            v = row[col_name]
-            try:
-                return float(str(v).replace("%", "").strip())
-            except Exception:
-                return None
+        exact = shareholding_company_df[
+            shareholding_company_df["CompanyNameRaw"].str.lower() == raw.lower()
+        ]
+        if not exact.empty:
+            row = exact.iloc[0]
+            return {
+                "ResolvedCompanyName": row["CompanyNameRaw"],
+                "MappingMethod": "exact_name",
+                "MatchScore": 1.0,
+                "Row": row,
+            }
 
-        promoter_pct  = pct_val(SH_COL_PROMOTER)
-        public_pct    = pct_val(SH_COL_PUBLIC)
-        emp_pct       = pct_val(SH_COL_EMP_TRUST)
-        as_on_date    = str(row[SH_COL_AS_ON]).strip()    if SH_COL_AS_ON    in row.index else None
-        revision_date = str(row[SH_COL_REVISION]).strip() if SH_COL_REVISION in row.index else None
-        action_link   = str(row[SH_COL_ACTION]).strip()   if SH_COL_ACTION   in row.index else None
-        sh_status     = str(row[SH_COL_STATUS]).strip()   if SH_COL_STATUS   in row.index else None
+        norm = normalize_company_name(raw)
+        norm_match = shareholding_company_df[shareholding_company_df["CompanyNameNorm"] == norm]
+        if not norm_match.empty:
+            row = norm_match.iloc[0]
+            return {
+                "ResolvedCompanyName": row["CompanyNameRaw"],
+                "MappingMethod": "normalized_exact",
+                "MatchScore": 0.99,
+                "Row": row,
+            }
 
-        parts     = [p for p in [promoter_pct, public_pct, emp_pct] if p is not None]
-        total_own = round(sum(parts), 2) if parts else None
+        candidates = shareholding_company_df[["CompanyNameRaw", "CompanyNameNorm"]].drop_duplicates().copy()
+        candidates["score"] = candidates["CompanyNameRaw"].apply(lambda x: score_name_similarity(raw, x))
+        candidates = candidates.sort_values("score", ascending=False)
 
-        ownership_valid = (
-            promoter_pct is not None
-            and public_pct is not None
-            and total_own is not None
-            and abs(total_own - 100.0) < 5.0
-        )
+        if not candidates.empty and float(candidates.iloc[0]["score"]) >= CONFIG["name_match_cutoff"]:
+            best_name = candidates.iloc[0]["CompanyNameRaw"]
+            row = shareholding_company_df[shareholding_company_df["CompanyNameRaw"] == best_name].iloc[0]
+            return {
+                "ResolvedCompanyName": row["CompanyNameRaw"],
+                "MappingMethod": "fuzzy",
+                "MatchScore": float(candidates.iloc[0]["score"]),
+                "Row": row,
+            }
 
-        lookup[ticker] = {
-            "PromoterPct_NSE":          promoter_pct,
-            "PublicPct_NSE":            public_pct,
-            "EmployeeTrustPct_NSE":     emp_pct,
-            "OwnershipTotalPct":        total_own,
-            "OwnershipDataValid":       ownership_valid,
-            "ShareholdingStatus":       "NSE CSV",
-            "ShareholdingAsOnDate":     as_on_date,
-            "ShareholdingRevisionDate": revision_date,
-            "ShareholdingActionLink":   action_link,
-            "NSE_SH_Status":            sh_status,
-            "HasShareholdingData":      True,
-        }
-
-    return lookup
+    return {
+        "ResolvedCompanyName": None,
+        "MappingMethod": "unmapped",
+        "MatchScore": None,
+        "Row": None,
+    }
 
 
 def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     if nse_df is None or nse_df.empty:
         return pd.DataFrame()
     df = nse_df.copy()
+    df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
     required_cols = ["FinInstrmTp", "SctySrs", "TckrSymb", "ClsPric", "TtlTradgVol", "TtlTrfVal"]
     for col in required_cols:
         if col not in df.columns:
@@ -283,50 +335,141 @@ def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     df = df[df["SctySrs"] == "EQ"]
     if df.empty:
         return pd.DataFrame()
-    df = df[["TckrSymb", "SctySrs", "ClsPric", "TtlTradgVol", "TtlTrfVal"]].copy()
+    keep_cols = ["TckrSymb", "SctySrs", "ClsPric", "TtlTradgVol", "TtlTrfVal"]
+    keep_cols = [c for c in keep_cols if c in df.columns]
+    df = df[keep_cols].copy()
     df = df.rename(columns={
-        "TckrSymb": "Ticker", "SctySrs": "Series",
-        "ClsPric": "Close", "TtlTradgVol": "Volume", "TtlTrfVal": "Turnover"
+        "TckrSymb": "Ticker",
+        "SctySrs": "Series",
+        "ClsPric": "Close",
+        "TtlTradgVol": "Volume",
+        "TtlTrfVal": "Turnover",
     })
+    df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
     return df.sort_values("Turnover", ascending=False).reset_index(drop=True)
 
 
-# -----------------------------
-# VERDICT LOGIC
-# -----------------------------
 def compute_screen_verdict(
     l1_val, l2_prof, l3_cf, l4_share, l5_forensic,
     l1_data_missing, l2_data_missing, l3_data_missing,
     l4_data_missing, l5_data_missing,
-    conviction, final_pass,
 ) -> str:
-    layers_missing = [l1_data_missing, l2_data_missing, l3_data_missing,
-                      l4_data_missing, l5_data_missing]
+    layers_missing = [l1_data_missing, l2_data_missing, l3_data_missing, l4_data_missing, l5_data_missing]
     layers_pass    = [l1_val, l2_prof, l3_cf, l4_share, l5_forensic]
     testable_count = sum(1 for m in layers_missing if not m)
+
     if testable_count < 3:
         return VERDICT_FAIL_NODATA
-    genuine_failure = any(
-        not passed and not missing
-        for passed, missing in zip(layers_pass, layers_missing)
-    )
+
+    genuine_failure = any((not passed) and (not missing) for passed, missing in zip(layers_pass, layers_missing))
     if genuine_failure:
         return VERDICT_FAIL_GENUINE
+
     if any(layers_missing):
         return VERDICT_PASS_DATAGAP
+
     return VERDICT_PASS
 
 
-# -----------------------------
-# CORE EVALUATION
-# -----------------------------
-def evaluate_stock(ticker: str) -> Dict[str, Any]:
+# =========================================================
+# SIDEBAR
+# =========================================================
+st.sidebar.header("Controls")
+min_score = st.sidebar.slider("Minimum conviction score", 0, 5, 4)
+only_pass = st.sidebar.checkbox("Show only final pass names", value=True)
+show_datagap = st.sidebar.checkbox("Also show PASS (Data gaps present)", value=True)
+max_stocks = st.sidebar.number_input("Max stocks to screen (top by NSE turnover)", 10, 500, 50, 10)
+
+st.sidebar.markdown("---")
+uploaded_nse_file = st.sidebar.file_uploader(
+    "Upload NSE bhavcopy CSV",
+    type=["csv"],
+    key="nse_bhavcopy_upload_refactor"
+)
+
+uploaded_sh_file = st.sidebar.file_uploader(
+    "Upload NSE shareholding CSV",
+    type=["csv"],
+    key="nse_shareholding_upload_refactor"
+)
+
+pause_between_calls = st.sidebar.slider("Pause between API calls (seconds)", 0.0, 1.0, 0.2, 0.1)
+
+with st.expander("How mapping works", expanded=False):
+    st.markdown("""
+**Resolution order**
+1. Auto symbol-company master from uploaded files
+2. Exact name match into shareholding CSV
+3. Normalized-name match
+4. Fuzzy match above confidence cutoff
+5. Small manual override table only if needed
+6. Otherwise mark stock as **Unmapped**
+""")
+
+# =========================================================
+# LOAD LOCAL MASTERS
+# =========================================================
+fundamentals_df = load_fundamentals_master()
+stock_master_df = load_stock_master()
+rebuild_fundamentals_lookup(fundamentals_df)
+
+# =========================================================
+# PREVIEWS
+# =========================================================
+st.subheader("Uploaded data status")
+
+col_a, col_b, col_c = st.columns(3)
+col_a.metric("fundamentals_master rows", 0 if fundamentals_df.empty else len(fundamentals_df))
+col_b.metric("stock_master rows", 0 if stock_master_df.empty else len(stock_master_df))
+col_c.metric("manual overrides", len(MANUAL_NAME_OVERRIDES))
+
+shareholding_company_df = pd.DataFrame()
+if uploaded_sh_file is not None:
     try:
-        yf_ticker    = yf.Ticker(ticker)
-        base_ticker  = ticker.replace(".NS", "").upper()
-        fund_row     = fundamentals_lookup.get(base_ticker)
-        sh_data      = shareholding_lookup.get(base_ticker)
-        info         = yf_ticker.info
+        uploaded_sh_file.seek(0)
+        sh_raw_df = pd.read_csv(uploaded_sh_file)
+        shareholding_company_df = build_shareholding_company_index(sh_raw_df)
+        st.success(f"Shareholding CSV loaded: {len(shareholding_company_df)} rows")
+    except Exception as e:
+        st.error(f"Error reading shareholding CSV: {e}")
+
+bhavcopy_equity_df = pd.DataFrame()
+bhavcopy_raw_df = pd.DataFrame()
+if uploaded_nse_file is not None:
+    try:
+        uploaded_nse_file.seek(0)
+        bhavcopy_raw_df = pd.read_csv(uploaded_nse_file)
+        bhavcopy_equity_df = build_nse_equity_universe(bhavcopy_raw_df)
+        if not bhavcopy_equity_df.empty:
+            st.success(f"Bhavcopy loaded: {len(bhavcopy_equity_df)} EQ stocks")
+    except Exception as e:
+        st.error(f"Error reading bhavcopy CSV: {e}")
+
+symbol_company_master, symbol_company_master_df = build_symbol_company_master(
+    stock_master_df=stock_master_df,
+    bhavcopy_df=bhavcopy_raw_df,
+    fundamentals_df=fundamentals_df
+)
+
+with st.expander("Symbol-company master preview", expanded=False):
+    if symbol_company_master_df.empty:
+        st.warning(
+            "No auto symbol-company master could be built from uploaded/local files. "
+            "Mapping can still work only through manual overrides, which is not ideal."
+        )
+    else:
+        st.write(f"Auto symbol-company master built for {len(symbol_company_master_df)} symbols")
+        st.dataframe(symbol_company_master_df.head(50), use_container_width=True)
+
+# =========================================================
+# MAIN EVALUATION
+# =========================================================
+def evaluate_stock(ticker: str, shareholding_csv_uploaded: bool) -> Dict[str, Any]:
+    try:
+        base_ticker = ticker.replace(".NS", "").upper().strip()
+        yf_ticker   = yf.Ticker(ticker)
+        info        = yf_ticker.info
+        fund_row    = fundamentals_lookup.get(base_ticker)
 
         pe           = safe(info, "trailingPE")
         pb           = safe(info, "priceToBook")
@@ -346,12 +489,12 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         sector       = safe(info, "sector", "N/A")
         ebit         = safe(info, "ebit")
         ta           = safe(info, "totalAssets")
-        current_liab = safe(info, "totalCurrentLiabilities")
+        current_liab = safe(turn num / 100.0 if num > 1.5 else num
 
-        mcap_cr = mcap_raw / 1e7 if mcap_raw else None
 
-        roce = None
-        if ebit and ta and current_liab is not None:
+def approx_quality_score(info: Dict[str, Any]) -> int:
+    score = 0
+    ni  = safe(info, "netIncorrent_liab is not None:
             cap_employed = ta - current_liab
             if cap_employed > 0:
                 roce = ebit / cap_employed
@@ -376,117 +519,137 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
 
         quality_raw = approx_quality_score(info)
 
-        # Overrides from fundamentals_master
         if fund_row is not None:
             for fm_col, var_name in [
-                ("ROE_Latest",            "roe"),
-                ("ROCE_Latest",           "roce"),
-                ("OPM_Latest",            "opm"),
+                ("ROE_Latest", "roe"),
+                ("ROCE_Latest", "roce"),
+                ("OPM_Latest", "opm"),
                 ("Revenue_CAGR_AllYears", "revg"),
-                ("PAT_CAGR_AllYears",     "earng"),
+                ("PAT_CAGR_AllYears", "earng"),
             ]:
                 if fm_col in fund_row.index:
                     v = parse_percent_or_float(fund_row[fm_col])
                     if v is not None:
-                        if var_name == "roe":   roe   = v
-                        if var_name == "roce":  roce  = v
-                        if var_name == "opm":   opm   = v
-                        if var_name == "revg":  revg  = v
-                        if var_name == "earng": earng = v
+                        if var_name == "roe": roe = v
+                        elif var_name == "roce": roce = v
+                        elif var_name == "opm": opm = v
+                        elif var_name == "revg": revg = v
+                        elif var_name == "earng": earng = v
 
-        # -------------------------------------------------------
-        # L4 OWNERSHIP — NSE shareholding CSV (primary)
-        # Falls back to yfinance heldPercentInsiders
-        # -------------------------------------------------------
-        promoter_pct_nse      = None
-        public_pct_nse        = None
-        emp_trust_pct_nse     = None
-        ownership_total_pct   = None
-        ownership_data_valid  = False
+        master_company_name = symbol_company_master.get(base_ticker)
+
+        resolved_company_name = None
+        mapping_method = None
+        mapping_score = None
+        promoter_pct_nse = None
+        public_pct_nse = None
+        emp_pct_nse = None
+        ownership_total_pct = None
+        ownership_valid = False
         has_shareholding_data = False
-        sh_as_on_date         = None
-        sh_revision_date      = None
-        sh_action_link        = None
-        shareholding_status   = "Not available"
+        shareholding_status = "Not available"
+        sh_as_on_date = None
+        sh_revision_date = None
+        sh_action_link = None
 
-        if sh_data is not None:
-            promoter_pct_nse      = sh_data.get("PromoterPct_NSE")
-            public_pct_nse        = sh_data.get("PublicPct_NSE")
-            emp_trust_pct_nse     = sh_data.get("EmployeeTrustPct_NSE")
-            ownership_total_pct   = sh_data.get("OwnershipTotalPct")
-            ownership_data_valid  = sh_data.get("OwnershipDataValid", False)
-            has_shareholding_data = sh_data.get("HasShareholdingData", False)
-            sh_as_on_date         = sh_data.get("ShareholdingAsOnDate")
-            sh_revision_date      = sh_data.get("ShareholdingRevisionDate")
-            sh_action_link        = sh_data.get("ShareholdingActionLink")
-            shareholding_status   = "NSE CSV" if has_shareholding_data else "Not available"
+        if shareholding_csv_uploaded and not shareholding_company_df.empty:
+            resolution = resolve_symbol_to_shareholding(
+                ticker=base_ticker,
+                company_master_name=master_company_name,
+                shareholding_company_df=shareholding_company_df,
+                manual_overrides=MANUAL_NAME_OVERRIDES,
+            )
+            resolved_company_name = resolution["ResolvedCompanyName"]
+            mapping_method = resolution["MappingMethod"]
+            mapping_score = resolution["MatchScore"]
+            row = resolution["Row"]
 
-        if promoter_pct_nse is not None:
-            l4_share        = ownership_data_valid and (promoter_pct_nse / 100.0) >= CONFIG["promoter_min"]
-            l4_data_missing = not has_shareholding_data
+            if row is not None:
+                promoter_pct_nse = pd.to_numeric(row["PROMOTER & PROMOTER GROUP (A)"], errors="coerce")
+                public_pct_nse   = pd.to_numeric(row["PUBLIC (B)"], errors="coerce")
+                emp_pct_nse      = pd.to_numeric(row["SHARES HELD BY EMPLOYEE TRUSTS (C2)"], errors="coerce")
+                sh_as_on_date    = row["AS ON DATE"]
+                sh_revision_date = row["REVISION DATE"]
+                sh_action_link   = row["ACTION"]
+                parts = [x for x in [promoter_pct_nse, public_pct_nse, emp_pct_nse] if pd.notna(x)]
+                ownership_total_pct = round(sum(parts), 2) if parts else None
+                ownership_valid = (
+                    promoter_pct_nse is not None and pd.notna(promoter_pct_nse)
+                    and public_pct_nse is not None and pd.notna(public_pct_nse)
+                    and ownership_total_pct is not None
+                    and abs(ownership_total_pct - 100.0) < 5.0
+                )
+                has_shareholding_data = True
+                shareholding_status = f"NSE CSV ({mapping_method})"
+            else:
+                shareholding_status = "Unmapped"
+
+        if shareholding_csv_uploaded:
+            if has_shareholding_data:
+                l4_share = bool(ownership_valid and promoter_pct_nse >= CONFIG["promoter_min"])
+                l4_data_missing = False
+            else:
+                l4_share = False
+                l4_data_missing = True
         else:
-            l4_share        = insider is not None and insider > CONFIG["insider_min"]
+            l4_share = bool(insider is not None and insider > CONFIG["insider_min"])
             l4_data_missing = insider is None
-            shareholding_status = "yfinance (fallback)" if insider is not None else "Not available"
+            if insider is not None:
+                shareholding_status = "yfinance (fallback)"
 
-        # L1 Valuation
         l1_checks = [
-            pe        is not None and pe        < CONFIG["pe_max"],
-            peg       is not None and peg       < CONFIG["peg_max"],
+            pe is not None and pe < CONFIG["pe_max"],
+            peg is not None and peg < CONFIG["peg_max"],
             ev_ebitda is not None and ev_ebitda < CONFIG["ev_ebitda_max"],
-            pb        is not None and pb        < CONFIG["pb_max"],
-            mcap_cr   is not None and CONFIG["mcap_min_cr"] <= mcap_cr <= CONFIG["mcap_max_cr"],
+            pb is not None and pb < CONFIG["pb_max"],
+            mcap_cr is not None and CONFIG["mcap_min_cr"] <= mcap_cr <= CONFIG["mcap_max_cr"],
         ]
-        l1_available    = [pe is not None, peg is not None, ev_ebitda is not None,
-                           pb is not None, mcap_cr is not None]
-        l1_val          = sum(l1_checks) >= 3
+        l1_available = [pe is not None, peg is not None, ev_ebitda is not None, pb is not None, mcap_cr is not None]
+        l1_val = sum(l1_checks) >= 3
         l1_data_missing = sum(l1_available) < 3
 
-        # L2 Profitability
         l2_checks = [
-            roce  is not None and roce  > CONFIG["roce_min"],
-            roe   is not None and roe   > CONFIG["roe_min"],
-            roa   is not None and roa   > CONFIG["roa_min"],
-            opm   is not None and opm   > CONFIG["opm_min"],
-            revg  is not None and revg  > CONFIG["rev_growth_min"],
+            roce is not None and roce > CONFIG["roce_min"],
+            roe is not None and roe > CONFIG["roe_min"],
+            roa is not None and roa > CONFIG["roa_min"],
+            opm is not None and opm > CONFIG["opm_min"],
+            revg is not None and revg > CONFIG["rev_growth_min"],
             earng is not None and earng > CONFIG["earn_growth_min"],
         ]
-        l2_available    = [roce is not None, roe is not None, roa is not None,
-                           opm is not None, revg is not None, earng is not None]
-        l2_prof         = sum(l2_checks) >= 4
+        l2_available = [roce is not None, roe is not None, roa is not None, opm is not None, revg is not None, earng is not None]
+        l2_prof = sum(l2_checks) >= 4
         l2_data_missing = sum(l2_available) < 4
 
-        # L3 Cash flow
         l3_checks = [
-            ocf_pat   is not None and ocf_pat   > CONFIG["ocf_pat_min"],
+            ocf_pat is not None and ocf_pat > CONFIG["ocf_pat_min"],
             fcf_yield is not None and fcf_yield > CONFIG["fcf_yield_min"],
-            de_ratio  is not None and de_ratio  < CONFIG["de_max"],
+            de_ratio is not None and de_ratio < CONFIG["de_max"],
         ]
-        l3_available    = [ocf_pat is not None, fcf_yield is not None, de_ratio is not None]
-        l3_cf           = sum(l3_checks) >= 2
+        l3_available = [ocf_pat is not None, fcf_yield is not None, de_ratio is not None]
+        l3_cf = sum(l3_checks) >= 2
         l3_data_missing = sum(l3_available) < 2
 
-        # L5 Forensic quality
         l5_fields_present = sum([
-            safe(info, "netIncomeToCommon")   is not None,
-            safe(info, "operatingCashflow")   is not None,
-            safe(info, "returnOnAssets")      is not None,
-            safe(info, "longTermDebt")        is not None,
-            safe(info, "totalAssets")         is not None,
-            safe(info, "currentRatio")        is not None,
-            safe(info, "grossMargins")        is not None,
+            safe(info, "netIncomeToCommon") is not None,
+            safe(info, "operatingCashflow") is not None,
+            safe(info, "returnOnAssets") is not None,
+            safe(info, "longTermDebt") is not None,
+            safe(info, "totalAssets") is not None,
+            safe(info, "currentRatio") is not None,
+            safe(info, "grossMargins") is not None,
         ])
-        l5_forensic     = quality_raw >= CONFIG["quality_min_raw"]
-        l5_data_missing = l5_fields_present < 4
+        l5_forensic = quality_raw >= CONFIG["quality_min_raw"]
+        l5_data_missing = l5_fields_preseturn num / 100.0 if num > 1.5 else num
 
-        conviction = sum([l1_val, l2_prof, l3_cf, l4_share, l5_forensic])
-        final_pass = bool(l2_prof and l5_forensic and conviction >= 4)
+
+def approx_quality_score(info: Dict[str, Any]) -> int:
+    score = 0
+    ni  = safe(info, "netIncoviction >= 4)
 
         verdict = compute_screen_verdict(
             l1_val, l2_prof, l3_cf, l4_share, l5_forensic,
             l1_data_missing, l2_data_missing, l3_data_missing,
             l4_data_missing, l5_data_missing,
-            conviction, final_pass,
         )
 
         ws = 0
@@ -505,407 +668,197 @@ def evaluate_stock(ticker: str) -> Dict[str, Any]:
         ws += 6 if fcf_yield is not None and fcf_yield > 0.03 else 0
         ws += 6 if de_ratio  is not None and de_ratio  < 0.5  else 0
         ws += 5 if l4_share else 0
-        qp  = round(10 * quality_raw / 7) if quality_raw is not None else 0
+        qp = round(10 * quality_raw / 7) if quality_raw is not None else 0
         ws += min(qp, 10)
 
-        ownership_anomaly = None
-        if promoter_pct_nse is not None and ownership_data_valid:
-            if promoter_pct_nse < 25.0:
-                ownership_anomaly = f"Low promoter holding: {promoter_pct_nse:.1f}%"
-            elif public_pct_nse is not None and public_pct_nse > 70.0:
-                ownership_anomaly = f"High public float: {public_pct_nse:.1f}%"
-
         return {
-            "Ticker":                   base_ticker,
-            "Sector":                   sector,
-            "ScreenVerdict":            verdict,
-            "Price":                    price,
-            "MCap_Cr":                  round(mcap_cr, 1) if mcap_cr else None,
-            "PE":                       round(pe, 2)      if pe else None,
-            "PB":                       round(pb, 2)      if pb else None,
-            "PEG":                      round(peg, 2)     if peg else None,
-            "ROCE_pct":                 round(roce * 100, 1)      if roce      is not None else None,
-            "ROE_pct":                  round(roe * 100, 1)       if roe       is not None else None,
-            "ROA_pct":                  round(roa * 100, 1)       if roa       is not None else None,
-            "OPM_pct":                  round(opm * 100, 1)       if opm       is not None else None,
-            "RevGrowth_pct":            round(revg * 100, 1)      if revg      is not None else None,
-            "EarnGrowth_pct":           round(earng * 100, 1)     if earng     is not None else None,
-            "OCF_PAT":                  round(ocf_pat, 2)         if ocf_pat   is not None else None,
-            "FCFYield_pct":             round(fcf_yield * 100, 2) if fcf_yield is not None else None,
-            "YahooInsider_pct":         round(insider * 100, 2)   if insider   is not None else None,
-            "PromoterPct_NSE":          promoter_pct_nse,
-            "PublicPct_NSE":            public_pct_nse,
-            "EmployeeTrustPct_NSE":     emp_trust_pct_nse,
-            "OwnershipTotalPct":        ownership_total_pct,
-            "OwnershipDataValid":       ownership_data_valid,
-            "ShareholdingStatus":       shareholding_status,
-            "ShareholdingAsOnDate":     sh_as_on_date,
+            "Ticker": base_ticker,
+            "Sector": sector,
+            "Price": price,
+            "MCap_Cr": round(mcap_cr, 1) if mcap_cr is not None else None,
+            "PE": round(pe, 2) if pe is not None else None,
+            "PB": round(pb, 2) if pb is not None else None,
+            "PEG": round(peg, 2) if peg is not None else None,
+            "ROCE_pct": round(roce * 100, 1) if roce is not None else None,
+            "ROE_pct": round(roe * 100, 1) if roe is not None else None,
+            "ROA_pct": round(roa * 100, 1) if roa is not None else None,
+            "OPM_pct": round(opm * 100, 1) if opm is not None else None,
+            "RevGrowth_pct": round(revg * 100, 1) if revg is not None else None,
+            "EarnGrowth_pct": round(earng * 100, 1) if earng is not None else None,
+            "OCF_PAT": round(ocf_pat, 2) if ocf_pat is not None else None,
+            "FCFYield_pct": round(fcf_yield * 100, 2) if fcf_yield is not None else None,
+            "YahooInsider_pct": round(insider * 100, 2) if insider is not None else None,
+            "ResolvedCompanyName": resolved_company_name,
+            "MappingMethod": mapping_method,
+            "MappingScore": mapping_score,
+            "PromoterPct_NSE": round(float(promoter_pct_nse), 2) if promoter_pct_nse is not None and pd.notna(promoter_pct_nse) else None,
+            "PublicPct_NSE": round(float(public_pct_nse), 2) if public_pct_nse is not None and pd.notna(public_pct_nse) else None,
+            "EmployeeTrustPct_NSE": round(float(emp_pct_nse), 2) if emp_pct_nse is not None and pd.notna(emp_pct_nse) else None,
+            "OwnershipTotalPct": ownership_total_pct,
+            "OwnershipDataValid": ownership_valid,
+            "ShareholdingStatus": shareholding_status,
+            "ShareholdingAsOnDate": sh_as_on_date,
             "ShareholdingRevisionDate": sh_revision_date,
-            "OwnershipAnomaly":         ownership_anomaly,
-            "QualityScore_raw":         quality_raw,
-            "L1_Val":                   l1_val,
-            "L2_Prof":                  l2_prof,
-            "L3_CF":                    l3_cf,
-            "L4_Share":                 l4_share,
-            "L5_Forensic":              l5_forensic,
-            "L1_DataMissing":           l1_data_missing,
-            "L2_DataMissing":           l2_data_missing,
-            "L3_DataMissing":           l3_data_missing,
-            "L4_DataMissing":           l4_data_missing,
-            "L5_DataMissing":           l5_data_missing,
-            "Conviction":               conviction,
-            "WeightedScore":            ws,
-            "Pass":                     final_pass,
-            "HasFundamentals":          fund_row is not None,
-            "HasShareholdingData":      has_shareholding_data,
-            "ShareholdingActionLink":   sh_action_link,
-            "Error":                    None,
+            "QualityScore_raw": quality_raw,
+            "L1_Val": l1_val,
+            "L2_Prof": l2_prof,
+            "L3_CF": l3_cf,
+            "L4_Share": l4_share,
+            "L5_Forensic": l5_forensic,
+            "L1_DataMissing": l1_data_missing,
+            "L2_DataMissing": l2_data_missing,
+            "L3_DataMissing": l3_data_missing,
+            "L4_DataMissing": l4_data_missing,
+            "L5_DataMissing": l5_data_missing,
+            "Conviction": conviction,
+            "WeightedScore": ws,
+            "Pass": final_pass,
+            "ScreenVerdict": verdict,
+            "HasFundamentals": fund_row is not None,
+            "HasShareholdingData": has_shareholding_data,
+            "Error": None,
+            "ShareholdingActionLink": sh_action_link,
         }
 
     except Exception as e:
-        base_ticker = ticker.replace(".NS", "")
+        base_ticker = ticker.replace(".NS", "").upper().strip()
         return {
-            "Ticker": base_ticker, "Sector": None,
+            "Ticker": base_ticker,
             "ScreenVerdict": VERDICT_FAIL_NODATA,
-            "Price": None, "MCap_Cr": None,
-            "PE": None, "PB": None, "PEG": None,
-            "ROCE_pct": None, "ROE_pct": None, "ROA_pct": None, "OPM_pct": None,
-            "RevGrowth_pct": None, "EarnGrowth_pct": None,
-            "OCF_PAT": None, "FCFYield_pct": None,
-            "YahooInsider_pct": None,
-            "PromoterPct_NSE": None, "PublicPct_NSE": None,
-            "EmployeeTrustPct_NSE": None, "OwnershipTotalPct": None,
-            "OwnershipDataValid": False, "ShareholdingStatus": "Error",
-            "ShareholdingAsOnDate": None, "ShareholdingRevisionDate": None,
-            "OwnershipAnomaly": None,
-            "QualityScore_raw": None,
-            "L1_Val": False, "L2_Prof": False, "L3_CF": False,
-            "L4_Share": False, "L5_Forensic": False,
-            "L1_DataMissing": True, "L2_DataMissing": True, "L3_DataMissing": True,
-            "L4_DataMissing": True, "L5_DataMissing": True,
-            "Conviction": 0, "WeightedScore": 0, "Pass": False,
-            "HasFundamentals": False, "HasShareholdingData": False,
-            "ShareholdingActionLink": None, "Error": str(e),
+            "Conviction": 0,
+            "WeightedScore": 0,
+            "Pass": False,
+            "HasFundamentals": False,
+            "HasShareholdingData": False,
+            "ShareholdingStatus": "Error",
+            "Error": str(e),
         }
 
 
-# -----------------------------
-# SIDEBAR — distinct key= for every file_uploader
-# -----------------------------
-st.sidebar.header("Controls")
-min_score    = st.sidebar.slider("Minimum conviction score", 0, 5, 4)
-only_pass    = st.sidebar.checkbox("Show only final pass names", value=True)
-show_datagap = st.sidebar.checkbox(
-    "Also show PASS (Data gaps present)", value=True,
-    help="Include stocks that pass all testable layers but have some missing data fields."
-)
-max_stocks = st.sidebar.number_input(
-    "Max stocks to screen (top by NSE turnover)",
-    min_value=10, max_value=500, value=50, step=10,
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("NSE bhavcopy (price universe)")
-uploaded_nse_file = st.sidebar.file_uploader(
-    "Upload NSE EOD CSV (weekly bhavcopy)",
-    type=["csv"],
-    key="nse_bhavcopy_upload",
-    help="Download the equity bhavcopy from NSE India on Friday night, then upload here.",
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("NSE shareholding (L4 ownership)")
-uploaded_sh_file = st.sidebar.file_uploader(
-    "Upload CF-Shareholding-Pattern CSV",
-    type=["csv"],
-    key="nse_shareholding_upload",
-    help="Download from NSE India → Corporate Filings → Shareholding Pattern.",
-)
-
-pause_between_calls = st.sidebar.slider(
-    "Pause between API calls (seconds)",
-    min_value=0.0, max_value=1.0, value=0.2, step=0.1,
-)
-st.sidebar.write(f"Default universe: {len(DEFAULT_UNIVERSE)} tickers")
-st.sidebar.write(f"Ticker→Company map: {len(TICKER_TO_COMPANY)} entries")
-
-with st.expander("ScreenVerdict legend", expanded=False):
-    st.markdown("""
-| Verdict | Meaning |
-|---|---|
-| **PASS** | Passes all 5 layers; no data gaps. |
-| **PASS (Data gaps present)** | Passes every testable layer; some layers untestable. Treat as a qualified pass worth deeper manual review. |
-| **FAIL (Genuine)** | Fails at least one layer where real data *is* available. |
-| **FAIL (Insufficient data)** | Fewer than 3 layers could be tested. No reliable conclusion possible. |
-""")
-
-with st.expander("L4 Ownership source priority", expanded=False):
-    st.markdown("""
-**Priority:**
-1. **NSE shareholding CSV** — promoter % ≥ 40%. Most reliable. Matched via `TICKER_TO_COMPANY` map.
-2. **yfinance `heldPercentInsiders`** — fallback when CSV not uploaded or ticker not in map.
-
-The **ShareholdingStatus** column shows which source was used per stock.
-To add tickers, edit `TICKER_TO_COMPANY` at the top of this script.
-""")
-
-# Fundamentals preview
-st.subheader("Fundamentals master")
-with st.expander("Show fundamentals_master.csv", expanded=False):
-    fundamentals_df = load_fundamentals_master()
-    if fundamentals_df.empty:
-        st.info("fundamentals_master.csv not found or empty.")
-    else:
-        st.write(f"Loaded {len(fundamentals_df)} stock(s)")
-        st.dataframe(fundamentals_df, use_container_width=True)
-
-# Stock master preview
-st.subheader("Stock master (sector & subsector)")
-with st.expander("Show stock_master.csv", expanded=False):
-    stock_master_df = load_stock_master()
-    if stock_master_df.empty:
-        st.info("stock_master.csv not found or empty.")
-    else:
-        st.write(f"Loaded {len(stock_master_df)} stock(s)")
-        st.dataframe(stock_master_df, use_container_width=True)
-
-# Shareholding CSV preview + match check
-st.subheader("NSE shareholding data")
-with st.expander("Show shareholding CSV preview + match check", expanded=False):
-    if uploaded_sh_file is None:
-        st.info(
-            "No shareholding CSV uploaded. L4 will fall back to yfinance. "
-            "Download from NSE → Corporate Filings → Shareholding Pattern "
-            "→ CF-Shareholding-Pattern-equities-{date}.csv"
-        )
-    else:
-        try:
-            uploaded_sh_file.seek(0)
-            sh_preview_df = pd.read_csv(uploaded_sh_file)
-            sh_preview_df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in sh_preview_df.columns]
-            st.write(f"Loaded {len(sh_preview_df)} rows, {len(sh_preview_df.columns)} columns.")
-            st.caption(f"Columns detected: {list(sh_preview_df.columns)}")
-            st.dataframe(sh_preview_df.head(5), use_container_width=True)
-
-            test_lookup = build_shareholding_lookup(sh_preview_df)
-            matched   = sorted([t for t in TICKER_TO_COMPANY if t in test_lookup])
-            unmatched = sorted([t for t in TICKER_TO_COMPANY if t not in test_lookup])
-            if matched:
-                st.success(f"✅ Matched {len(matched)} ticker(s): {matched}")
-            if unmatched:
-                st.warning(f"⚠️ Unmatched {len(unmatched)} ticker(s): {unmatched}")
-            if matched:
-                preview_rows = []
-                for t in matched:
-                    d = test_lookup[t]
-                    preview_rows.append({
-                        "Ticker":      t,
-                        "Company":     TICKER_TO_COMPANY[t],
-                        "PromoterPct": d.get("PromoterPct_NSE"),
-                        "PublicPct":   d.get("PublicPct_NSE"),
-                        "AsOnDate":    d.get("ShareholdingAsOnDate"),
-                        "DataValid":   d.get("OwnershipDataValid"),
-                    })
-                st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
-        except Exception as e:
-            st.error(f"Error reading shareholding CSV: {e}")
-
-# Bhavcopy preview
-st.subheader("NSE bhavcopy (price universe)")
-with st.expander("Show uploaded NSE bhavcopy preview", expanded=False):
-    if uploaded_nse_file is None:
-        st.info("No bhavcopy uploaded. App will screen DEFAULT_UNIVERSE of 10 tickers.")
-    else:
-        try:
-            uploaded_nse_file.seek(0)
-            nse_prices_df = pd.read_csv(uploaded_nse_file)
-            st.write(f"Loaded {len(nse_prices_df)} rows.")
-            st.dataframe(nse_prices_df.head(10), use_container_width=True)
-            equity_universe_df = build_nse_equity_universe(nse_prices_df)
-            if equity_universe_df is not None and not equity_universe_df.empty:
-                st.write(f"Equity universe: {len(equity_universe_df)} stocks. Top 50 by turnover:")
-                st.dataframe(equity_universe_df.head(50), use_container_width=True)
-        except Exception as e:
-            st.error(f"Error reading bhavcopy CSV: {e}")
-
-# -----------------------------
-# MAIN ACTION
-# -----------------------------
+# =========================================================
+# RUN
+# =========================================================
 if st.button("Run live screen"):
+    shareholding_csv_uploaded = uploaded_sh_file is not None and not shareholding_company_df.empty
 
-    # Build shareholding lookup
-    if uploaded_sh_file is not None:
-        try:
-            uploaded_sh_file.seek(0)
-            sh_raw_df = pd.read_csv(uploaded_sh_file)
-            sh_raw_df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in sh_raw_df.columns]
-            shareholding_lookup = build_shareholding_lookup(sh_raw_df)
-            st.info(
-                f"Shareholding lookup built: {len(shareholding_lookup)} ticker(s) matched "
-                f"→ {list(shareholding_lookup.keys())}"
-            )
-        except Exception as e:
-            st.warning(f"Could not build shareholding lookup: {e}")
-            shareholding_lookup = {}
-    else:
-        shareholding_lookup = {}
-        st.warning("No shareholding CSV uploaded. L4 will use yfinance insiderHoldingsPercent (less reliable for Indian stocks).")
+    if not bhavcopy_equity_df.empty:
+        universe = bhavcopy_equity_df.head(int(max_stocks))
+        tickers_to_screen = [f"{t}.NS" for t in universe["Ticker"].tolist()]
+        st.info(f"Using NSE bhavcopy universe: screening top {len(tickers_to_screen)} stock(s) by turnoveturn num / 100.0 if num > 1.5 else num
 
-    # Build equity universe
-    if uploaded_nse_file is not None:
-        try:
-            uploaded_nse_file.seek(0)
-            raw_nse_df = pd.read_csv(uploaded_nse_file)
-            equity_universe_df_local = build_nse_equity_universe(raw_nse_df)
-        except Exception as e:
-            st.error(f"Error rebuilding NSE equity universe: {e}")
-            equity_universe_df_local = None
-    else:
-        equity_universe_df_local = None
 
-    if equity_universe_df_local is not None and not equity_universe_df_local.empty:
-        base_universe     = equity_universe_df_local.head(int(max_stocks))
-        universe_tickers  = base_universe["Ticker"].astype(str).str.upper().tolist()
-        tickers_to_screen = [f"{t}.NS" for t in universe_tickers]
-        st.info(f"Using NSE bhavcopy universe: screening top {len(tickers_to_screen)} stock(s) by turnover.")
-    else:
-        tickers_to_screen = DEFAULT_UNIVERSE
-        st.warning("No NSE bhavcopy uploaded; falling back to DEFAULT_UNIVERSE list.")
-
-    fundamentals_master_df = load_fundamentals_master()
-    stock_master_df        = load_stock_master()
-    rebuild_fundamentals_lookup(fundamentals_master_df)
+def approx_quality_score(info: Dict[str, Any]) -> int:
+    score = 0
+    ni  = safe(info, "netInco.")
 
     st.write(f"Found {len(tickers_to_screen)} stocks to screen")
 
-    rows: List[Dict[str, Any]] = []
-    progress_bar  = st.progress(0)
-    status_text   = st.empty()
+    rows = []
+    progress_bar = st.progress(0)
     total_tickers = len(tickers_to_screen)
 
-    with st.spinner("Fetching live data from Yahoo Finance..."):
+    with st.spinner("Fetching live data..."):
         for i, ticker in enumerate(tickers_to_screen):
-            status_text.text(f"Screening {ticker} ({i+1}/{total_tickers})...")
-            row = evaluate_stock(ticker)
-            if row:
-                rows.append(row)
+            rows.append(evaluate_stock(ticker, shareholding_csv_uploaded=shareholding_csv_uploaded))
             progress_bar.progress((i + 1) / total_tickers)
             time.sleep(pause_between_calls)
 
-    status_text.empty()
     progress_bar.empty()
 
     df = pd.DataFrame(rows)
 
-    # Merge sector/subsector from stock_master
-    if not df.empty and stock_master_df is not None and not stock_master_df.empty:
+    if not df.empty and stock_master_df is not None and not stock_master_df.empty and "Ticker" in stock_master_df.columns:
         merge_cols = [c for c in ["Ticker", "Sector", "SubSector"] if c in stock_master_df.columns]
         if len(merge_cols) > 1:
-            df = df.merge(
-                stock_master_df[merge_cols],
-                on="Ticker", how="left", suffixes=("", "_stock"),
-            )
+            df = df.merge(stock_master_df[merge_cols], on="Ticker", how="left", suffixes=("", "_stock"))
             if "Sector_stock" in df.columns:
-                df["Sector"] = df["Sector_stock"].combine_first(df["Sector"])
+                df["Sector"] = df["Sector_stock"].combine_first(df.get("Sector"))
                 df.drop(columns=["Sector_stock"], inplace=True)
-            if "SubSector_stock" in df.columns:
-                df.rename(columns={"SubSector_stock": "SubSector"}, inplace=True)
 
-    # Merge fundamentals columns
-    if not df.empty and fundamentals_master_df is not None and not fundamentals_master_df.empty:
-        fund_merge_cols = [
+    if not df.empty and fundamentals_df is not None and not fundamentals_df.empty and "Ticker" in fundamentals_df.columns:
+        fundamentals_cols = [
             "Ticker", "Latest_Year",
             "ROE_Latest", "ROCE_Latest", "OPM_Latest", "NPM_Latest",
             "Revenue_CAGR_AllYears", "PAT_CAGR_AllYears",
             "ROCE_5Y_Avg", "ROE_5Y_Avg", "OPM_5Y_Avg",
-            "OneOff_ROCE_Flag", "Asset_Quality_Risk_Flag",
-            "Reg_Risk_Flag", "Gov_Risk_Flag",
+            "OneOff_ROCE_Flag", "Asset_Quality_Risk_Flag", "Reg_Risk_Flag", "Gov_Risk_Flag",
         ]
-        fund_merge_cols = [c for c in fund_merge_cols if c in fundamentals_master_df.columns]
-        df = df.merge(
-            fundamentals_master_df[fund_merge_cols],
-            on="Ticker", how="left", suffixes=("", "_fund"),
-        )
+        fundamentals_cols = [c for c in fundamentals_cols if c in fundamentals_df.columns]
+        df = df.merge(fundamentals_df[fundamentals_cols], on="Ticker", how="left")
 
-    # Apply filters
+    if not df.empty:
+        mapped = df["ResolvedCompanyName"].notna().sum() if "ResolvedCompanyName" in df.columns else 0
+        unmapped = (df["ShareholdingStatus"] == "Unmapped").sum() if "ShareholdingStatus" in df.columns else 0
+        st.write(f"Mapping summary: mapped {mapped}, unmapped {unmapped}")
+
+        unresolved = df[df["ShareholdingStatus"] == "Unmapped"][["Ticker", "ResolvedCompanyName", "MappingMethod"]].copy() \
+            if "ShareholdingStatus" in df.columns else pd.DataFrame()
+        if not unresolved.empty:
+            with st.expander("Unmapped stocks requiring exception review", expanded=False):
+                st.dataframe(unresolved, use_container_width=True)
+
     if only_pass:
         if show_datagap:
             df = df[df["ScreenVerdict"].isin([VERDICT_PASS, VERDICT_PASS_DATAGAP])]
         else:
             df = df[df["ScreenVerdict"] == VERDICT_PASS]
+
     if min_score > 0:
         df = df[df["Conviction"] >= min_score]
 
-    # Sort
     verdict_order = {
-        VERDICT_PASS: 0, VERDICT_PASS_DATAGAP: 1,
-        VERDICT_FAIL_GENUINE: 2, VERDICT_FAIL_NODATA: 3,
+        VERDICT_PASS: 0,
+        VERDICT_PASS_DATAGAP: 1,
+        VERDICT_FAIL_GENUINE: 2,
+        VERDICT_FAIL_NODATA: 3,
     }
-    df["_vsort"] = df["ScreenVerdict"].map(verdict_order).fillna(9).astype(int)
-    df = df.sort_values(["_vsort", "WeightedScore", "Conviction"],
-                        ascending=[True, False, False])
-    df.drop(columns=["_vsort"], inplace=True)
+    if not df.empty:
+        df["_vsort"] = df["ScreenVerdict"].map(verdict_order).fillna(9).astype(int)
+        df = df.sort_values(["_vsort", "WeightedScore", "Conviction"], ascending=[True, False, False]).drop(columns=["_vsort"])
 
-    # Column order
-    preferred_order = [
-        "Ticker", "Sector", "SubSector", "ScreenVerdict", "Price", "MCap_Cr",
-        "PE", "PB", "PEG", "ROCE_pct", "ROE_pct", "ROA_pct", "OPM_pct",
-        "RevGrowth_pct", "EarnGrowth_pct", "OCF_PAT", "FCFYield_pct",
-        "YahooInsider_pct",
-        "PromoterPct_NSE", "PublicPct_NSE", "EmployeeTrustPct_NSE",
-        "OwnershipTotalPct", "OwnershipDataValid",
-        "ShareholdingStatus", "ShareholdingAsOnDate", "ShareholdingRevisionDate",
-        "OwnershipAnomaly",
-        "QualityScore_raw",
-        "L1_Val", "L2_Prof", "L3_CF", "L4_Share", "L5_Forensic",
-        "L1_DataMissing", "L2_DataMissing", "L3_DataMissing",
-        "L4_DataMissing", "L5_DataMissing",
-        "Conviction", "WeightedScore", "Pass",
-        "HasFundamentals", "HasShareholdingData",
-        "Latest_Year", "ROE_Latest", "ROCE_Latest", "OPM_Latest", "NPM_Latest",
-        "Revenue_CAGR_AllYears", "PAT_CAGR_AllYears",
-        "ROCE_5Y_Avg", "ROE_5Y_Avg", "OPM_5Y_Avg",
-        "OneOff_ROCE_Flag", "Asset_Quality_Risk_Flag", "Reg_Risk_Flag", "Gov_Risk_Flag",
-        "Error", "ShareholdingActionLink",
-    ]
-    existing_cols  = [c for c in preferred_order if c in df.columns]
-    remaining_cols = [c for c in df.columns if c not in existing_cols]
-    df = df[existing_cols + remaining_cols]
-
-    total     = len(df)
-    n_pass    = (df["ScreenVerdict"] == VERDICT_PASS).sum()
-    n_datagap = (df["ScreenVerdict"] == VERDICT_PASS_DATAGAP).sum()
-    n_genuine = (df["ScreenVerdict"] == VERDICT_FAIL_GENUINE).sum()
-    n_nodata  = (df["ScreenVerdict"] == VERDICT_FAIL_NODATA).sum()
+    total = len(df)
+    n_pass = (df["ScreenVerdict"] == VERDICT_PASS).sum() if not df.empty else 0
+    n_datagap = (df["ScreenVerdict"] == VERDICT_PASS_DATAGAP).sum() if not df.empty else 0
+    n_genuine = (df["ScreenVerdict"] == VERDICT_FAIL_GENUINE).sum() if not df.empty else 0
+    n_nodata = (df["ScreenVerdict"] == VERDICT_FAIL_NODATA).sum() if not df.empty else 0
 
     st.success(f"Screen complete — {total} stock(s) shown")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("PASS", n_pass)
-    col2.metric("PASS (Data gaps)", n_datagap)
-    col3.metric("FAIL (Genuine)", n_genuine)
-    col4.metric("FAIL (No data)", n_nodata)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("PASS", n_pass)
+    c2.metric("PASS (Data gaps)", n_datagap)
+    c3.metric("FAIL (Genuine)", n_genuine)
+    c4.metric("FAIL (No data)", n_nodata)
 
     if not df.empty:
+        preferred_order = [
+            "Ticker", "Sector", "SubSector", "ScreenVerdict", "Price", "MCap_Cr",
+            "PE", "PB", "PEG", "ROCE_pct", "ROE_pct", "ROA_pct", "OPM_pct",
+            "RevGrowth_pct", "EarnGrowth_pct", "OCF_PAT", "FCFYield_pct",
+            "ResolvedCompanyName", "MappingMethod", "MappingScore",
+            "PromoterPct_NSE", "PublicPct_NSE", "EmployeeTrustPct_NSE",
+            "OwnershipTotalPct", "OwnershipDataValid", "ShareholdingStatus",
+            "ShareholdingAsOnDate", "ShareholdingRevisionDate",
+            "QualityScore_raw", "L1_Val", "L2_Prof", "L3_CF", "L4_Share", "L5_Forensic",
+            "Conviction", "WeightedScore", "Pass",
+            "HasFundamentals", "HasShareholdingData",
+            "Latest_Year", "ROE_Latest", "ROCE_Latest", "OPM_Latest", "NPM_Latest",
+            "Revenue_CAGR_AllYears", "PAT_CAGR_AllYears",
+            "ROCE_5Y_Avg", "ROE_5Y_Avg", "OPM_5Y_Avg",
+            "OneOff_ROCE_Flag", "Asset_Quality_Risk_Flag", "Reg_Risk_Flag", "Gov_Risk_Flag",
+            "Error", "ShareholdingActionLink",
+        ]
+        existing_cols = [c for c in preferred_order if c in df.columns]
+        remaining_cols = [c for c in df.columns if c not in existing_cols]
+        df = df[existing_cols + remaining_cols]
+
         st.dataframe(df, use_container_width=True)
         st.download_button(
             "Download CSV",
             data=df.to_csv(index=False),
-            file_name="100x_screener_v4_results.csv",
+            file_name="100x_screener_refactored_results.csv",
             mime="text/csv",
         )
     else:
-        st.info(
-            "No stocks passed the current filters. "
-            "Try lowering the conviction score threshold or unchecking 'Show only final pass names'."
-        )
-
-    if "OwnershipAnomaly" in df.columns and not df.empty:
-        anomalies = df[df["OwnershipAnomaly"].notna()][["Ticker", "PromoterPct_NSE", "OwnershipAnomaly"]]
-        if anomalies.empty:
-            st.info("No ownership anomalies in screened names.")
-        else:
-            st.warning("Ownership anomalies detected:")
-            st.dataframe(anomalies, use_container_width=True)
-
+        st.info("No stocks passed the current filters.")
 else:
     st.info("Click **Run live screen** to start.")
