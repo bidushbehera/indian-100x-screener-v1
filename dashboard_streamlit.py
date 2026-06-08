@@ -730,6 +730,14 @@ if st.button("Run live screen"):
     if df.empty:
         st.warning("No stocks matched the current filters.")
     else:
+        st.write("Columns in df:")
+        st.write(list(df.columns))
+
+        st.write("HINDZINC transposed row:")
+        hind = df[df["Ticker"] == "HINDZINC"]
+        if not hind.empty:
+            st.dataframe(hind.T, use_container_width=True)
+            
         st.dataframe(df, use_container_width=True)
         st.download_button(
             "Download CSV",
