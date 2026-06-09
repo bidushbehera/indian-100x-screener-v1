@@ -50,6 +50,7 @@ TICKER_TO_COMPANY: Dict[str, str] = {
     "INFOBEAN":  "InfoBeans Technologies Limited",
     "GULPOLY":   "Gujarat Poly Electronics Limited",
     "BLSE":      "BLS International Services Limited",
+    "HINDZINC": "Hindustan Zinc Limited",
 }
 
 # ──────────────────────────────────────────────────────────────
