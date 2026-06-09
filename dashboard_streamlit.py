@@ -985,7 +985,7 @@ with tab_screen:
 
         tickers_to_screen: List[str] = []
 
-            if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
             if not fm_df2.empty and "Ticker" in fm_df2.columns:
                 fm_curated = (
                     fm_df2["Ticker"]
