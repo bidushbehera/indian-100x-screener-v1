@@ -944,6 +944,14 @@ with tab_screen:
 
     if st.button("▶ Run Live Screen", type="primary"):
 
+              if uploaded_sh is None:
+            st.error("Shareholding CSV not loaded. Please re-upload the NSE Shareholding Pattern CSV in the sidebar before running.")
+            st.stop()
+
+        if uploaded_nse is None:
+            st.error("NSE bhavcopy CSV not loaded. Please re-upload the NSE EOD Bhavcopy CSV in the sidebar before running.")
+            st.stop()
+
         sh_lookup: Dict[str, Dict] = {}
         if uploaded_sh is not None:
             try:
