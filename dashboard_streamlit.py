@@ -987,7 +987,7 @@ with tab_screen:
 
         if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
                         if not fm_df2.empty and "Ticker" in fm_df2.columns:
-                curated = (
+              curated = (
                     fm_df2["Ticker"]
                     .dropna()
                     .astype(str)
