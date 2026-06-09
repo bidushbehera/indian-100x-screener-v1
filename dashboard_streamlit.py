@@ -675,21 +675,65 @@ def render_sector_heatmap(df: pd.DataFrame) -> None:
     if df is None or df.empty or "Sector" not in df.columns:
         st.info("No sector data available.")
         return
-    grp = df.groupby("Sector").agg(
+
+    grp = df.groupby("Sector", dropna=False).agg(
         Total=("Ticker", "count"),
         PassCount=("Pass", "sum"),
         AvgWeightedScore=("WeightedScore", "mean"),
         AvgConviction=("Conviction", "mean"),
     ).reset_index()
-    grp["PassRate_%"]        = (grp["PassCount"] / grp["Total"] * 100).round(1)
-    grp["AvgWeightedScore"]  = grp["AvgWeightedScore"].round(1)
-    grp["AvgConviction"]     = grp["AvgConviction"].round(2)
-    grp = grp.sort_values("AvgWeightedScore", ascending=False)
-    st.dataframe(
-        grp.style.background_gradient(subset=["AvgWeightedScore", "PassRate_%"], cmap="YlGn"),
-        use_container_width=True,
+    grp["PassRate_%"]       = (grp["PassCount"] / grp["Total"] * 100).round(1)
+    grp["AvgWeightedScore"] = grp["AvgWeightedScore"].round(1)
+    grp["AvgConviction"]    = grp["AvgConviction"].round(2)
+    grp = grp.sort_values("AvgWeightedScore", ascending=False).reset_index(drop=True)
+
+    # --- color helpers (no matplotlib dependency) ---
+    def color_score(val):
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return ""
+        if v >= 55:
+            return "background-color: #c6efce; color: #276221"   # green
+        if v >= 35:
+            return "background-color: #ffeb9c; color: #9c6500"   # amber
+        return "background-color: #ffc7ce; color: #9c0006"       # red
+
+    def color_passrate(val):
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return ""
+        if v >= 50:
+            return "background-color: #c6efce; color: #276221"
+        if v >= 20:
+            return "background-color: #ffeb9c; color: #9c6500"
+        return "background-color: #ffc7ce; color: #9c0006"
+
+    def color_conviction(val):
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return ""
+        if v >= 4:
+            return "background-color: #c6efce; color: #276221"
+        if v >= 2.5:
+            return "background-color: #ffeb9c; color: #9c6500"
+        return "background-color: #ffc7ce; color: #9c0006"
+
+    styled = (
+        grp.style
+        .map(color_score,      subset=["AvgWeightedScore"])
+        .map(color_passrate,   subset=["PassRate_%"])
+        .map(color_conviction, subset=["AvgConviction"])
+        .format({
+            "AvgWeightedScore": "{:.1f}",
+            "AvgConviction":    "{:.2f}",
+            "PassRate_%":       "{:.1f}%",
+        })
     )
 
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
 def render_watchlist_table(results_df: Optional[pd.DataFrame]) -> None:
     wl = st.session_state.watchlist
