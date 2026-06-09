@@ -944,7 +944,7 @@ with tab_screen:
 
     if st.button("▶ Run Live Screen", type="primary"):
 
-              if uploaded_sh is None:
+        if uploaded_sh is None:
             st.error("Shareholding CSV not loaded. Please re-upload the NSE Shareholding Pattern CSV in the sidebar before running.")
             st.stop()
 
