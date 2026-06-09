@@ -830,6 +830,17 @@ show_datagap = st.sidebar.checkbox("Include PASS (Data gaps)", value=True)
 max_stocks   = st.sidebar.number_input(
     "Max stocks (top by NSE turnover)", min_value=10, max_value=500, value=50, step=10,
 )
+
+screen_mode = st.sidebar.radio(
+    "Screen mode",
+    [
+        "Mid/Small cap (₹200–5000 Cr)",
+        "All cap",
+    ],
+    index=0,
+    help="Use Mid/Small cap for original 100X screener logic. Use All cap only for broader exploration."
+)
+
 pause_sec = st.sidebar.slider("Pause between API calls (s)", 0.0, 1.0, 0.2, 0.1)
 
 st.sidebar.markdown("---")
@@ -945,21 +956,45 @@ with tab_screen:
         else:
             st.warning("No shareholding CSV → L4 uses yfinance fallback.")
 
+                # Apply screen mode to valuation framework
+        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+            CONFIG["mcap_min_cr"] = 200.0
+            CONFIG["mcap_max_cr"] = 5000.0
+        else:
+            CONFIG["mcap_min_cr"] = 200.0
+            CONFIG["mcap_max_cr"] = 500000.0
+
         tickers_to_screen: List[str] = []
         if uploaded_nse is not None:
             try:
                 uploaded_nse.seek(0)
                 nse_raw = pd.read_csv(uploaded_nse)
                 eq_univ = build_nse_equity_universe(nse_raw)
+
                 if not eq_univ.empty:
-                    top_t = eq_univ.head(int(max_stocks))["Ticker"].astype(str).str.upper().tolist()
+                    if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+                        # Keep the same turnover universe source for now,
+                        # but skip the very top turnover names that are usually mega-caps.
+                        candidate_universe = eq_univ.iloc[20:20 + int(max_stocks)].copy()
+                        st.info(
+                            f"Universe: turnover-ranked slice 21 to {20 + len(candidate_universe)} "
+                            f"(mode: {screen_mode})."
+                        )
+                    else:
+                        candidate_universe = eq_univ.head(int(max_stocks)).copy()
+                        st.info(
+                            f"Universe: top {len(candidate_universe)} by NSE turnover "
+                            f"(mode: {screen_mode})."
+                        )
+
+                    top_t = candidate_universe["Ticker"].astype(str).str.upper().tolist()
                     tickers_to_screen = [f"{t}.NS" for t in top_t]
-                    st.info(f"Universe: top {len(tickers_to_screen)} by NSE turnover.")
             except Exception as e:
                 st.error(f"Error rebuilding universe: {e}")
+
         if not tickers_to_screen:
             tickers_to_screen = DEFAULT_UNIVERSE
-            st.warning("Using DEFAULT_UNIVERSE (10 tickers).")
+            st.warning(f"Using DEFAULT_UNIVERSE ({len(DEFAULT_UNIVERSE)} tickers). Mode: {screen_mode}")
 
         fm_df2      = load_csv_safe("fundamentals_master.csv")
         sm_df       = load_csv_safe("stock_master.csv")
