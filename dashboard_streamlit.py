@@ -972,40 +972,80 @@ with tab_screen:
             CONFIG["mcap_min_cr"] = 200.0
             CONFIG["mcap_max_cr"] = 500000.0
 
+               # Apply screen mode to valuation framework
+        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+            CONFIG["mcap_min_cr"] = 200.0
+            CONFIG["mcap_max_cr"] = 5000.0
+        else:
+            CONFIG["mcap_min_cr"] = 200.0
+            CONFIG["mcap_max_cr"] = 500000.0
+
+        fm_df2 = load_csv_safe("fundamentals_master.csv")
+        sm_df  = load_csv_safe("stock_master.csv")
+
         tickers_to_screen: List[str] = []
-        if uploaded_nse is not None:
-            try:
-                uploaded_nse.seek(0)
-                nse_raw = pd.read_csv(uploaded_nse)
-                eq_univ = build_nse_equity_universe(nse_raw)
 
-                if not eq_univ.empty:
-                    if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
-                        # Keep the same turnover universe source for now,
-                        # but skip the very top turnover names that are usually mega-caps.
-                        candidate_universe = eq_univ.iloc[20:20 + int(max_stocks)].copy()
+        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+            if not fm_df2.empty and "Ticker" in fm_df2.columns:
+                curated = (
+                    fm_df2["Ticker"]
+                    .dropna()
+                    .astype(str)
+                    .str.upper()
+                    .str.strip()
+                    .unique()
+                    .tolist()
+                )
+                tickers_to_screen = [f"{t}.NS" for t in curated[: int(max_stocks)]]
+                st.info(
+                    f"Universe: fundamentals_master curated list "
+                    f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
+                )
+            elif not sm_df.empty and "Ticker" in sm_df.columns:
+                curated = (
+                    sm_df["Ticker"]
+                    .dropna()
+                    .astype(str)
+                    .str.upper()
+                    .str.strip()
+                    .unique()
+                    .tolist()
+                )
+                tickers_to_screen = [f"{t}.NS" for t in curated[: int(max_stocks)]]
+                st.info(
+                    f"Universe: stock_master curated list "
+                    f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
+                )
+            else:
+                tickers_to_screen = DEFAULT_UNIVERSE
+                st.warning(
+                    f"No curated universe file found, so using DEFAULT_UNIVERSE "
+                    f"({len(DEFAULT_UNIVERSE)} tickers). Mode: {screen_mode}"
+                )
+
+        else:
+            if uploaded_nse is not None:
+                try:
+                    uploaded_nse.seek(0)
+                    nse_raw = pd.read_csv(uploaded_nse)
+                    eq_univ = build_nse_equity_universe(nse_raw)
+                    if not eq_univ.empty:
+                        top_t = eq_univ.head(int(max_stocks))["Ticker"].astype(str).str.upper().tolist()
+                        tickers_to_screen = [f"{t}.NS" for t in top_t]
                         st.info(
-                            f"Universe: turnover-ranked slice 21 to {20 + len(candidate_universe)} "
-                            f"(mode: {screen_mode})."
+                            f"Universe: top {len(tickers_to_screen)} by NSE turnover "
+                            f"(mode: {screen_mode})"
                         )
-                    else:
-                        candidate_universe = eq_univ.head(int(max_stocks)).copy()
-                        st.info(
-                            f"Universe: top {len(candidate_universe)} by NSE turnover "
-                            f"(mode: {screen_mode})."
-                        )
+                except Exception as e:
+                    st.error(f"Error rebuilding universe: {e}")
 
-                    top_t = candidate_universe["Ticker"].astype(str).str.upper().tolist()
-                    tickers_to_screen = [f"{t}.NS" for t in top_t]
-            except Exception as e:
-                st.error(f"Error rebuilding universe: {e}")
+            if not tickers_to_screen:
+                tickers_to_screen = DEFAULT_UNIVERSE
+                st.warning(
+                    f"NSE universe unavailable, so using DEFAULT_UNIVERSE "
+                    f"({len(DEFAULT_UNIVERSE)} tickers). Mode: {screen_mode}"
+                )
 
-        if not tickers_to_screen:
-            tickers_to_screen = DEFAULT_UNIVERSE
-            st.warning(f"Using DEFAULT_UNIVERSE ({len(DEFAULT_UNIVERSE)} tickers). Mode: {screen_mode}")
-
-        fm_df2      = load_csv_safe("fundamentals_master.csv")
-        sm_df       = load_csv_safe("stock_master.csv")
         fund_lookup = rebuild_fundamentals_lookup(fm_df2)
 
         run_ts  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
