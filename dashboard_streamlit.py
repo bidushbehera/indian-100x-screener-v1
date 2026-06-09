@@ -985,9 +985,9 @@ with tab_screen:
 
         tickers_to_screen: List[str] = []
 
-        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
-                        if not fm_df2.empty and "Ticker" in fm_df2.columns:
-                  curated = (
+                if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+            if not fm_df2.empty and "Ticker" in fm_df2.columns:
+                fm_curated = (
                     fm_df2["Ticker"]
                     .dropna()
                     .astype(str)
@@ -996,16 +996,16 @@ with tab_screen:
                     .unique()
                     .tolist()
                 )
-                curated = [t for t in curated if t and t != "NAN"]
+                fm_curated = [t for t in fm_curated if t and t != "NAN"]
 
-                if len(curated) >= 10:
-                    tickers_to_screen = [f"{t}.NS" for t in curated[: int(max_stocks)]]
+                if len(fm_curated) >= 10:
+                    tickers_to_screen = [f"{t}.NS" for t in fm_curated[: int(max_stocks)]]
                     st.info(
                         f"Universe: fundamentals_master curated list "
                         f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
                     )
                 elif not sm_df.empty and "Ticker" in sm_df.columns:
-                    curated = (
+                    sm_curated = (
                         sm_df["Ticker"]
                         .dropna()
                         .astype(str)
@@ -1014,22 +1014,23 @@ with tab_screen:
                         .unique()
                         .tolist()
                     )
-                    curated = [t for t in curated if t and t != "NAN"]
-                    tickers_to_screen = [f"{t}.NS" for t in curated[: int(max_stocks)]]
+                    sm_curated = [t for t in sm_curated if t and t != "NAN"]
+                    tickers_to_screen = [f"{t}.NS" for t in sm_curated[: int(max_stocks)]]
                     st.warning(
-                        f"fundamentals_master has only {len(curated)} usable tickers, "
+                        f"fundamentals_master has only {len(fm_curated)} usable tickers, "
                         f"so falling back to stock_master curated list "
                         f"({len(tickers_to_screen)} tickers)."
                     )
                 else:
                     tickers_to_screen = DEFAULT_UNIVERSE
                     st.warning(
-                        f"fundamentals_master has too few usable tickers, and stock_master is unavailable, "
-                        f"so using DEFAULT_UNIVERSE ({len(DEFAULT_UNIVERSE)} tickers)."
+                        f"fundamentals_master has only {len(fm_curated)} usable tickers, "
+                        f"and stock_master is unavailable, so using DEFAULT_UNIVERSE "
+                        f"({len(DEFAULT_UNIVERSE)} tickers)."
                     )
 
             elif not sm_df.empty and "Ticker" in sm_df.columns:
-                curated = (
+                sm_curated = (
                     sm_df["Ticker"]
                     .dropna()
                     .astype(str)
@@ -1038,11 +1039,13 @@ with tab_screen:
                     .unique()
                     .tolist()
                 )
-                tickers_to_screen = [f"{t}.NS" for t in curated[: int(max_stocks)]]
+                sm_curated = [t for t in sm_curated if t and t != "NAN"]
+                tickers_to_screen = [f"{t}.NS" for t in sm_curated[: int(max_stocks)]]
                 st.info(
                     f"Universe: stock_master curated list "
                     f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
                 )
+
             else:
                 tickers_to_screen = DEFAULT_UNIVERSE
                 st.warning(
