@@ -604,6 +604,13 @@ max_stocks = st.sidebar.number_input(
     min_value=10, max_value=500, value=50, step=10,
 )
 
+screen_mode = st.sidebar.radio(
+    "Screen mode",
+    ["Mid/Small cap (₹200–5000 Cr)", "All cap"],
+    index=0,
+    help="Use Mid/Small cap for original 100X logic. All cap keeps the full turnover-based universe.",
+)
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("NSE bhavcopy (price universe)")
 uploaded_nse_file = st.sidebar.file_uploader(
@@ -828,13 +835,31 @@ if st.button("Run live screen"):
         )
 
     # Apply filters
+    screened_count = len(df)
+
+    if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+        pre_cap_count = len(df)
+        df = df[
+            df["MCap_Cr"].notna()
+            & (df["MCap_Cr"] >= CONFIG["mcap_min_cr"])
+            & (df["MCap_Cr"] <= CONFIG["mcap_max_cr"])
+        ].copy()
+        st.info(
+            f"Screen mode applied: Mid/Small cap "
+            f"({CONFIG['mcap_min_cr']:.0f}–{CONFIG['mcap_max_cr']:.0f} Cr) — "
+            f"{len(df)} of {pre_cap_count} screened stocks remain."
+        )
+    else:
+        st.info("Screen mode applied: All cap — no market-cap filter.")
+
     if only_pass:
         if show_datagap:
-            df = df[df["ScreenVerdict"].isin([VERDICT_PASS, VERDICT_PASS_DATAGAP])]
+            df = df[df["ScreenVerdict"].isin([VERDICT_PASS, VERDICT_PASS_DATAGAP])].copy()
         else:
-            df = df[df["ScreenVerdict"] == VERDICT_PASS]
+            df = df[df["ScreenVerdict"] == VERDICT_PASS].copy()
+
     if min_score > 0:
-        df = df[df["Conviction"] >= min_score]
+        df = df[df["Conviction"] >= min_score].copy()
 
     # Sort
     verdict_order = {
@@ -878,7 +903,7 @@ if st.button("Run live screen"):
     n_genuine = (df["ScreenVerdict"] == VERDICT_FAIL_GENUINE).sum()
     n_nodata  = (df["ScreenVerdict"] == VERDICT_FAIL_NODATA).sum()
 
-    st.success(f"Screen complete — {total} stock(s) shown")
+    st.success(f"Screen complete — {screened_count} screened, {total} stock(s) shown")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("PASS", n_pass)
     col2.metric("PASS (Data gaps)", n_datagap)
