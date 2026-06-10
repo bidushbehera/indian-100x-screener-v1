@@ -985,7 +985,7 @@ with tab_screen:
 
         tickers_to_screen: List[str] = []
 
-                if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+            if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
             mapped_tickers = [t for t in TICKER_TO_COMPANY.keys() if t and t != "NAN"]
             tickers_to_screen = [f"{t}.NS" for t in mapped_tickers[: int(max_stocks)]]
             st.info(
