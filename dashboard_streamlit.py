@@ -50,7 +50,7 @@ TICKER_TO_COMPANY: Dict[str, str] = {
     "INFOBEAN":  "InfoBeans Technologies Limited",
     "GULPOLY":   "Gujarat Poly Electronics Limited",
     "BLSE":      "BLS International Services Limited",
-    "HINDZINC": "Hindustan Zinc Limited",
+    "HINDZINC":  "Hindustan Zinc Limited",
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -62,25 +62,25 @@ DEFAULT_UNIVERSE: List[str] = [
 ]
 
 CONFIG: Dict[str, Any] = {
-    "pe_max":           20.0,
-    "peg_max":           1.0,
-    "ev_ebitda_max":    12.0,
-    "pb_max":            3.0,
-    "mcap_min_cr":     200.0,
-    "mcap_max_cr":    5000.0,
-    "roce_min":         0.20,
-    "roe_min":          0.18,
-    "roa_min":          0.10,
-    "opm_min":          0.15,
-    "rev_growth_min":   0.15,
-    "earn_growth_min":  0.20,
-    "ocf_pat_min":      0.80,
-    "fcf_yield_min":    0.03,
-    "de_max":           0.50,
-    "promoter_min":     0.40,
-    "insider_min":      0.40,
-    "quality_min_raw":   5,
-    "alert_score_drop": 10,
+    "pe_max":             20.0,
+    "peg_max":             1.0,
+    "ev_ebitda_max":      12.0,
+    "pb_max":              3.0,
+    "mcap_min_cr":       200.0,
+    "mcap_max_cr":      5000.0,
+    "roce_min":           0.20,
+    "roe_min":            0.18,
+    "roa_min":            0.10,
+    "opm_min":            0.15,
+    "rev_growth_min":     0.15,
+    "earn_growth_min":    0.20,
+    "ocf_pat_min":        0.80,
+    "fcf_yield_min":      0.03,
+    "de_max":             0.50,
+    "promoter_min":       0.40,
+    "insider_min":        0.40,
+    "quality_min_raw":     5,
+    "alert_score_drop":   10,
     "alert_promoter_min": 30.0,
 }
 
@@ -147,14 +147,14 @@ def parse_percent_or_float(value) -> Optional[float]:
 
 def approx_quality_score(info: Dict[str, Any]) -> int:
     score = 0
-    ni   = safe(info, "netIncomeToCommon") or 0
-    ocf  = safe(info, "operatingCashflow") or 0
-    roa  = safe(info, "returnOnAssets") or 0
-    ltd  = safe(info, "longTermDebt") or 0
-    ta   = safe(info, "totalAssets") or 0
-    cr   = safe(info, "currentRatio") or 0
-    gm   = safe(info, "grossMargins") or 0
-    rg   = safe(info, "revenueGrowth") or 0
+    ni  = safe(info, "netIncomeToCommon") or 0
+    ocf = safe(info, "operatingCashflow") or 0
+    roa = safe(info, "returnOnAssets") or 0
+    ltd = safe(info, "longTermDebt") or 0
+    ta  = safe(info, "totalAssets") or 0
+    cr  = safe(info, "currentRatio") or 0
+    gm  = safe(info, "grossMargins") or 0
+    rg  = safe(info, "revenueGrowth") or 0
     if ni > 0:                             score += 1
     if ocf > 0:                            score += 1
     if roa and roa > 0.05:                 score += 1
@@ -284,10 +284,7 @@ def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values("Turnover", ascending=False).reset_index(drop=True)
 
 
-def compute_screen_verdict(
-    l1, l2, l3, l4, l5,
-    l1m, l2m, l3m, l4m, l5m,
-) -> str:
+def compute_screen_verdict(l1, l2, l3, l4, l5, l1m, l2m, l3m, l4m, l5m) -> str:
     passes  = [l1, l2, l3, l4, l5]
     missing = [l1m, l2m, l3m, l4m, l5m]
     testable = sum(1 for m in missing if not m)
@@ -363,7 +360,6 @@ def evaluate_stock(
 
         quality_raw = approx_quality_score(info)
 
-        # Override from fundamentals_master
         if fund_row is not None:
             for fm_col, attr in [
                 ("ROE_Latest",            "roe"),
@@ -381,7 +377,6 @@ def evaluate_stock(
                         elif attr == "revg": revg  = v
                         elif attr == "earng": earng = v
 
-        # L4 shareholding
         promoter_pct_nse = public_pct_nse = emp_trust_pct_nse = None
         ownership_total  = None
         ownership_valid  = False
@@ -407,7 +402,6 @@ def evaluate_stock(
             l4_missing = insider is None
             sh_status  = "yfinance (fallback)" if insider is not None else "Not available"
 
-        # L1 Valuation
         l1_chk = [
             pe        is not None and pe        < CONFIG["pe_max"],
             peg       is not None and peg       < CONFIG["peg_max"],
@@ -419,7 +413,6 @@ def evaluate_stock(
         l1_val     = sum(l1_chk) >= 3
         l1_missing = sum(l1_avail) < 3
 
-        # L2 Profitability
         l2_chk = [
             roce  is not None and roce  > CONFIG["roce_min"],
             roe   is not None and roe   > CONFIG["roe_min"],
@@ -432,7 +425,6 @@ def evaluate_stock(
         l2_prof    = sum(l2_chk) >= 4
         l2_missing = sum(l2_avail) < 4
 
-        # L3 Cash Flow
         l3_chk = [
             ocf_pat   is not None and ocf_pat   > CONFIG["ocf_pat_min"],
             fcf_yield is not None and fcf_yield > CONFIG["fcf_yield_min"],
@@ -442,7 +434,6 @@ def evaluate_stock(
         l3_cf      = sum(l3_chk) >= 2
         l3_missing = sum(l3_avail) < 2
 
-        # L5 Forensic
         l5_fields = sum([
             safe(info, k) is not None
             for k in ["netIncomeToCommon", "operatingCashflow", "returnOnAssets",
@@ -458,7 +449,6 @@ def evaluate_stock(
             l1_missing, l2_missing, l3_missing, l4_missing, l5_missing,
         )
 
-        # Weighted score
         ws = 0
         ws += 5  if pe        is not None and pe        < 20   else 0
         ws += 5  if peg       is not None and peg       < 1    else 0
@@ -558,7 +548,6 @@ def evaluate_stock(
 # ──────────────────────────────────────────────────────────────
 # PHASE 4 HELPERS
 # ──────────────────────────────────────────────────────────────
-
 def watchlist_add(ticker: str, price: Optional[float], sector: str) -> None:
     st.session_state.watchlist[ticker] = {
         "add_price": price,
@@ -582,10 +571,7 @@ def append_score_history(run_ts: str, rows: List[Dict[str, Any]]) -> None:
         })
 
 
-def generate_alerts(
-    current_df: pd.DataFrame,
-    prev_history: List[Dict[str, Any]],
-) -> List[str]:
+def generate_alerts(current_df: pd.DataFrame, prev_history: List[Dict[str, Any]]) -> List[str]:
     alerts: List[str] = []
     if current_df is None or current_df.empty:
         return alerts
@@ -630,11 +616,11 @@ def render_deep_dive(row: pd.Series) -> None:
 
     st.markdown("#### Layer-by-Layer Verdict")
     layers = [
-        ("L1_Val",     "L1_DataMissing",  "L1 Valuation"),
-        ("L2_Prof",    "L2_DataMissing",  "L2 Profitability"),
-        ("L3_CF",      "L3_DataMissing",  "L3 Cash Flow"),
-        ("L4_Share",   "L4_DataMissing",  "L4 Shareholding"),
-        ("L5_Forensic","L5_DataMissing",  "L5 Forensic"),
+        ("L1_Val",      "L1_DataMissing", "L1 Valuation"),
+        ("L2_Prof",     "L2_DataMissing", "L2 Profitability"),
+        ("L3_CF",       "L3_DataMissing", "L3 Cash Flow"),
+        ("L4_Share",    "L4_DataMissing", "L4 Shareholding"),
+        ("L5_Forensic", "L5_DataMissing", "L5 Forensic"),
     ]
     for pass_col, miss_col, label in layers:
         passed  = row.get(pass_col, False)
@@ -687,27 +673,22 @@ def render_sector_heatmap(df: pd.DataFrame) -> None:
     grp["AvgConviction"]    = grp["AvgConviction"].round(2)
     grp = grp.sort_values("AvgWeightedScore", ascending=False).reset_index(drop=True)
 
-    # --- color helpers (no matplotlib dependency) ---
     def color_score(val):
         try:
             v = float(val)
         except (TypeError, ValueError):
             return ""
-        if v >= 55:
-            return "background-color: #c6efce; color: #276221"   # green
-        if v >= 35:
-            return "background-color: #ffeb9c; color: #9c6500"   # amber
-        return "background-color: #ffc7ce; color: #9c0006"       # red
+        if v >= 55: return "background-color: #c6efce; color: #276221"
+        if v >= 35: return "background-color: #ffeb9c; color: #9c6500"
+        return "background-color: #ffc7ce; color: #9c0006"
 
     def color_passrate(val):
         try:
             v = float(val)
         except (TypeError, ValueError):
             return ""
-        if v >= 50:
-            return "background-color: #c6efce; color: #276221"
-        if v >= 20:
-            return "background-color: #ffeb9c; color: #9c6500"
+        if v >= 50: return "background-color: #c6efce; color: #276221"
+        if v >= 20: return "background-color: #ffeb9c; color: #9c6500"
         return "background-color: #ffc7ce; color: #9c0006"
 
     def color_conviction(val):
@@ -715,10 +696,8 @@ def render_sector_heatmap(df: pd.DataFrame) -> None:
             v = float(val)
         except (TypeError, ValueError):
             return ""
-        if v >= 4:
-            return "background-color: #c6efce; color: #276221"
-        if v >= 2.5:
-            return "background-color: #ffeb9c; color: #9c6500"
+        if v >= 4:   return "background-color: #c6efce; color: #276221"
+        if v >= 2.5: return "background-color: #ffeb9c; color: #9c6500"
         return "background-color: #ffc7ce; color: #9c0006"
 
     styled = (
@@ -732,8 +711,8 @@ def render_sector_heatmap(df: pd.DataFrame) -> None:
             "PassRate_%":       "{:.1f}%",
         })
     )
-
     st.dataframe(styled, use_container_width=True, hide_index=True)
+
 
 def render_watchlist_table(results_df: Optional[pd.DataFrame]) -> None:
     wl = st.session_state.watchlist
@@ -828,17 +807,14 @@ min_score    = st.sidebar.slider("Min conviction score", 0, 5, 4)
 only_pass    = st.sidebar.checkbox("Show only PASS verdicts", value=True)
 show_datagap = st.sidebar.checkbox("Include PASS (Data gaps)", value=True)
 max_stocks   = st.sidebar.number_input(
-    "Max stocks (top by NSE turnover)", min_value=10, max_value=500, value=50, step=10,
+    "Max stocks to screen", min_value=10, max_value=500, value=50, step=10,
 )
 
 screen_mode = st.sidebar.radio(
     "Screen mode",
-    [
-        "Mid/Small cap (₹200–5000 Cr)",
-        "All cap",
-    ],
+    ["Mid/Small cap (₹200–5000 Cr)", "All cap"],
     index=0,
-    help="Use Mid/Small cap for original 100X screener logic. Use All cap only for broader exploration."
+    help="Mid/Small cap uses TICKER_TO_COMPANY mapped list. All cap uses NSE bhavcopy universe.",
 )
 
 pause_sec = st.sidebar.slider("Pause between API calls (s)", 0.0, 1.0, 0.2, 0.1)
@@ -856,8 +832,8 @@ uploaded_sh = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.write(f"Default universe: {len(DEFAULT_UNIVERSE)} tickers")
-st.sidebar.write(f"Ticker→Company map: {len(TICKER_TO_COMPANY)} entries")
+st.sidebar.write(f"Mapped tickers (Mid/Small cap universe): {len(TICKER_TO_COMPANY)}")
+st.sidebar.write(f"Default universe size: {len(DEFAULT_UNIVERSE)}")
 
 # ──────────────────────────────────────────────────────────────
 # MAIN TITLE
@@ -902,12 +878,12 @@ with tab_screen:
 """)
 
     with st.expander("Fundamentals master preview"):
-        fm_df = load_csv_safe("fundamentals_master.csv")
-        if fm_df.empty:
+        fm_preview = load_csv_safe("fundamentals_master.csv")
+        if fm_preview.empty:
             st.info("fundamentals_master.csv not found.")
         else:
-            st.write(f"{len(fm_df)} stocks loaded")
-            st.dataframe(fm_df, use_container_width=True)
+            st.write(f"{len(fm_preview)} rows loaded")
+            st.dataframe(fm_preview, use_container_width=True)
 
     with st.expander("NSE shareholding CSV preview"):
         if uploaded_sh is None:
@@ -929,7 +905,7 @@ with tab_screen:
 
     with st.expander("NSE price CSV preview"):
         if uploaded_nse is None:
-            st.info("Upload NSE bhavcopy CSV to expand the universe.")
+            st.info("Upload NSE bhavcopy CSV to use All cap mode.")
         else:
             try:
                 uploaded_nse.seek(0)
@@ -944,14 +920,7 @@ with tab_screen:
 
     if st.button("▶ Run Live Screen", type="primary"):
 
-        if uploaded_sh is None:
-            st.error("Shareholding CSV not loaded. Please re-upload the NSE Shareholding Pattern CSV in the sidebar before running.")
-            st.stop()
-
-        if uploaded_nse is None:
-            st.error("NSE bhavcopy CSV not loaded. Please re-upload the NSE EOD Bhavcopy CSV in the sidebar before running.")
-            st.stop()
-
+        # ── Build shareholding lookup ──────────────────────────
         sh_lookup: Dict[str, Dict] = {}
         if uploaded_sh is not None:
             try:
@@ -964,7 +933,7 @@ with tab_screen:
         else:
             st.warning("No shareholding CSV → L4 uses yfinance fallback.")
 
-                # Apply screen mode to valuation framework
+        # ── Apply screen mode to CONFIG ────────────────────────
         if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
             CONFIG["mcap_min_cr"] = 200.0
             CONFIG["mcap_max_cr"] = 5000.0
@@ -972,27 +941,16 @@ with tab_screen:
             CONFIG["mcap_min_cr"] = 200.0
             CONFIG["mcap_max_cr"] = 500000.0
 
-               # Apply screen mode to valuation framework
-        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
-            CONFIG["mcap_min_cr"] = 200.0
-            CONFIG["mcap_max_cr"] = 5000.0
-        else:
-            CONFIG["mcap_min_cr"] = 200.0
-            CONFIG["mcap_max_cr"] = 500000.0
-
-        fm_df2 = load_csv_safe("fundamentals_master.csv")
-        sm_df  = load_csv_safe("stock_master.csv")
-
+        # ── Build universe ─────────────────────────────────────
         tickers_to_screen: List[str] = []
 
-          if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
-            mapped_tickers = [t for t in TICKER_TO_COMPANY.keys() if t and t != "NAN"]
-            tickers_to_screen = [f"{t}.NS" for t in mapped_tickers[: int(max_stocks)]]
+        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+            mapped = [t for t in TICKER_TO_COMPANY.keys() if t and t != "NAN"]
+            tickers_to_screen = [f"{t}.NS" for t in mapped[: int(max_stocks)]]
             st.info(
                 f"Universe: TICKER_TO_COMPANY mapped list "
-                f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
+                f"({len(tickers_to_screen)} tickers) — mode: {screen_mode}"
             )
-
         else:
             if uploaded_nse is not None:
                 try:
@@ -1004,7 +962,7 @@ with tab_screen:
                         tickers_to_screen = [f"{t}.NS" for t in top_t]
                         st.info(
                             f"Universe: top {len(tickers_to_screen)} by NSE turnover "
-                            f"(mode: {screen_mode})"
+                            f"— mode: {screen_mode}"
                         )
                 except Exception as e:
                     st.error(f"Error rebuilding universe: {e}")
@@ -1012,34 +970,16 @@ with tab_screen:
             if not tickers_to_screen:
                 tickers_to_screen = DEFAULT_UNIVERSE
                 st.warning(
-                    f"NSE universe unavailable, so using DEFAULT_UNIVERSE "
-                    f"({len(DEFAULT_UNIVERSE)} tickers). Mode: {screen_mode}"
-                )
-        else:
-            if uploaded_nse is not None:
-                try:
-                    uploaded_nse.seek(0)
-                    nse_raw = pd.read_csv(uploaded_nse)
-                    eq_univ = build_nse_equity_universe(nse_raw)
-                    if not eq_univ.empty:
-                        top_t = eq_univ.head(int(max_stocks))["Ticker"].astype(str).str.upper().tolist()
-                        tickers_to_screen = [f"{t}.NS" for t in top_t]
-                        st.info(
-                            f"Universe: top {len(tickers_to_screen)} by NSE turnover "
-                            f"(mode: {screen_mode})"
-                        )
-                except Exception as e:
-                    st.error(f"Error rebuilding universe: {e}")
-
-            if not tickers_to_screen:
-                tickers_to_screen = DEFAULT_UNIVERSE
-                st.warning(
-                    f"NSE universe unavailable, so using DEFAULT_UNIVERSE "
-                    f"({len(DEFAULT_UNIVERSE)} tickers). Mode: {screen_mode}"
+                    f"NSE universe unavailable — using DEFAULT_UNIVERSE "
+                    f"({len(DEFAULT_UNIVERSE)} tickers)."
                 )
 
+        # ── Load static CSVs ───────────────────────────────────
+        fm_df2      = load_csv_safe("fundamentals_master.csv")
+        sm_df       = load_csv_safe("stock_master.csv")
         fund_lookup = rebuild_fundamentals_lookup(fm_df2)
 
+        # ── Run screen ─────────────────────────────────────────
         run_ts  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         results = []
         prog    = st.progress(0)
@@ -1057,6 +997,7 @@ with tab_screen:
         prog.empty()
         df = pd.DataFrame(results)
 
+        # ── Merge stock_master sector/subsector ────────────────
         if not df.empty and not sm_df.empty:
             sm_cols = [c for c in ["Ticker", "Sector", "SubSector"] if c in sm_df.columns]
             if sm_cols:
@@ -1067,6 +1008,7 @@ with tab_screen:
                 if "SubSector_sm" in df.columns:
                     df.rename(columns={"SubSector_sm": "SubSector"}, inplace=True)
 
+        # ── Merge fundamentals_master extra columns ────────────
         if not df.empty and not fm_df2.empty:
             fm_extra = [
                 "Ticker", "Latest_Year",
@@ -1085,6 +1027,7 @@ with tab_screen:
         prev_hist = [h for h in st.session_state.score_history if h.get("RunTimestamp") != run_ts]
         st.session_state.alerts = generate_alerts(df, prev_hist)
 
+        # ── Filter for display ─────────────────────────────────
         display_df = df.copy()
         if only_pass:
             valid_v = [VERDICT_PASS] + ([VERDICT_PASS_DATAGAP] if show_datagap else [])
@@ -1092,8 +1035,10 @@ with tab_screen:
         if min_score > 0:
             display_df = display_df[display_df["Conviction"] >= min_score]
 
-        v_order = {VERDICT_PASS: 0, VERDICT_PASS_DATAGAP: 1,
-                   VERDICT_FAIL_GENUINE: 2, VERDICT_FAIL_NODATA: 3}
+        v_order = {
+            VERDICT_PASS: 0, VERDICT_PASS_DATAGAP: 1,
+            VERDICT_FAIL_GENUINE: 2, VERDICT_FAIL_NODATA: 3,
+        }
         display_df["_vs"] = display_df["ScreenVerdict"].map(v_order).fillna(9).astype(int)
         display_df = display_df.sort_values(
             ["_vs", "WeightedScore", "Conviction"], ascending=[True, False, False]
@@ -1219,8 +1164,8 @@ with tab_watchlist:
 
     if st.session_state.watchlist:
         wl_rows = [
-            {"Ticker": t, "Sector": m.get("sector","—"),
-             "AddDate": m.get("add_date","—"), "AddPrice": m.get("add_price")}
+            {"Ticker": t, "Sector": m.get("sector", "—"),
+             "AddDate": m.get("add_date", "—"), "AddPrice": m.get("add_price")}
             for t, m in st.session_state.watchlist.items()
         ]
         st.download_button(
@@ -1280,16 +1225,12 @@ with tab_about:
 | **Sector Heatmap** | Sector-wise pass rate % and avg WeightedScore; colour-graded table |
 | **Enhanced Exports** | Date-stamped CSVs for full results AND watchlist separately |
 
-### Phase 3 features retained
-- NSE shareholding CSV → `TICKER_TO_COMPANY` match → promoter ≥ 40% L4 check
-- ScreenVerdict: PASS / PASS (Data gaps) / FAIL (Genuine) / FAIL (Insufficient data)
-- L1–L5 five-layer framework; Conviction (0–5); WeightedScore (0–80)
-- `fundamentals_master.csv` and `stock_master.csv` overrides
-- NSE bhavcopy CSV for full equity universe (top N by turnover)
+### Universe modes
+- **Mid/Small cap** — screens tickers in `TICKER_TO_COMPANY` map (edit in script to expand).
+- **All cap** — screens top N by NSE turnover using uploaded bhavcopy CSV.
 
 ### Session state resets on browser refresh
 All watchlist, notes, and score history live in `st.session_state` only.
-This is a Streamlit sandboxing constraint — localStorage is blocked.
 
 ### Files expected in app directory
 - `fundamentals_master.csv` — Ticker, ROE_Latest, ROCE_Latest, OPM_Latest, Revenue_CAGR_AllYears, PAT_CAGR_AllYears, ...
