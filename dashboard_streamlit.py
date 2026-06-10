@@ -985,74 +985,36 @@ with tab_screen:
 
         tickers_to_screen: List[str] = []
 
-        if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
-            if not fm_df2.empty and "Ticker" in fm_df2.columns:
-                fm_curated = (
-                    fm_df2["Ticker"]
-                    .dropna()
-                    .astype(str)
-                    .str.upper()
-                    .str.strip()
-                    .unique()
-                    .tolist()
-                )
-                fm_curated = [t for t in fm_curated if t and t != "NAN"]
+                if screen_mode == "Mid/Small cap (₹200–5000 Cr)":
+            mapped_tickers = [t for t in TICKER_TO_COMPANY.keys() if t and t != "NAN"]
+            tickers_to_screen = [f"{t}.NS" for t in mapped_tickers[: int(max_stocks)]]
+            st.info(
+                f"Universe: TICKER_TO_COMPANY mapped list "
+                f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
+            )
 
-                if len(fm_curated) >= 10:
-                    tickers_to_screen = [f"{t}.NS" for t in fm_curated[: int(max_stocks)]]
-                    st.info(
-                        f"Universe: fundamentals_master curated list "
-                        f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
-                    )
-                elif not sm_df.empty and "Ticker" in sm_df.columns:
-                    sm_curated = (
-                        sm_df["Ticker"]
-                        .dropna()
-                        .astype(str)
-                        .str.upper()
-                        .str.strip()
-                        .unique()
-                        .tolist()
-                    )
-                    sm_curated = [t for t in sm_curated if t and t != "NAN"]
-                    tickers_to_screen = [f"{t}.NS" for t in sm_curated[: int(max_stocks)]]
-                    st.warning(
-                        f"fundamentals_master has only {len(fm_curated)} usable tickers, "
-                        f"so falling back to stock_master curated list "
-                        f"({len(tickers_to_screen)} tickers)."
-                    )
-                else:
-                    tickers_to_screen = DEFAULT_UNIVERSE
-                    st.warning(
-                        f"fundamentals_master has only {len(fm_curated)} usable tickers, "
-                        f"and stock_master is unavailable, so using DEFAULT_UNIVERSE "
-                        f"({len(DEFAULT_UNIVERSE)} tickers)."
-                    )
+        else:
+            if uploaded_nse is not None:
+                try:
+                    uploaded_nse.seek(0)
+                    nse_raw = pd.read_csv(uploaded_nse)
+                    eq_univ = build_nse_equity_universe(nse_raw)
+                    if not eq_univ.empty:
+                        top_t = eq_univ.head(int(max_stocks))["Ticker"].astype(str).str.upper().tolist()
+                        tickers_to_screen = [f"{t}.NS" for t in top_t]
+                        st.info(
+                            f"Universe: top {len(tickers_to_screen)} by NSE turnover "
+                            f"(mode: {screen_mode})"
+                        )
+                except Exception as e:
+                    st.error(f"Error rebuilding universe: {e}")
 
-            elif not sm_df.empty and "Ticker" in sm_df.columns:
-                sm_curated = (
-                    sm_df["Ticker"]
-                    .dropna()
-                    .astype(str)
-                    .str.upper()
-                    .str.strip()
-                    .unique()
-                    .tolist()
-                )
-                sm_curated = [t for t in sm_curated if t and t != "NAN"]
-                tickers_to_screen = [f"{t}.NS" for t in sm_curated[: int(max_stocks)]]
-                st.info(
-                    f"Universe: stock_master curated list "
-                    f"({len(tickers_to_screen)} tickers) for mode: {screen_mode}"
-                )
-
-            else:
+            if not tickers_to_screen:
                 tickers_to_screen = DEFAULT_UNIVERSE
                 st.warning(
-                    f"No curated universe file found, so using DEFAULT_UNIVERSE "
+                    f"NSE universe unavailable, so using DEFAULT_UNIVERSE "
                     f"({len(DEFAULT_UNIVERSE)} tickers). Mode: {screen_mode}"
                 )
-
         else:
             if uploaded_nse is not None:
                 try:
