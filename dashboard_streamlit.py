@@ -791,7 +791,7 @@ Rule of thumb:
 """)
 
 if st.button("Run live screen"):
-        if uploaded_sh_file is not None:
+    if uploaded_sh_file is not None:
         try:
             uploaded_sh_file.seek(0)
             sh_raw_df = pd.read_csv(uploaded_sh_file)
