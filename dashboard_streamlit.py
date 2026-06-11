@@ -34,8 +34,6 @@ VERDICT_PASS_DATAGAP = "PASS (Data gaps present)"
 VERDICT_FAIL_GENUINE = "FAIL (Genuine)"
 VERDICT_FAIL_NODATA  = "FAIL (Insufficient data)"
 
-AMFI_DEFAULT_URL = "https://www.amfiindia.com/Themes/Theme1/downloads/AverageMarketCapitalization30Jun2025.xlsx"
-
 CONFIG: Dict[str, Any] = {
     "pe_max": 20.0,
     "peg_max": 1.0,
@@ -48,7 +46,6 @@ CONFIG: Dict[str, Any] = {
     "rev_growth_min": 0.15,
     "earn_growth_min": 0.20,
     "ocf_pat_min_guard": 0.50,
-    "fcf_yield_min_soft": 0.00,
     "de_max_guard": 1.00,
     "promoter_min": 0.40,
     "insider_min": 0.40,
@@ -99,6 +96,7 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
     cr  = safe(info, "currentRatio") or 0
     gm  = safe(info, "grossMargins") or 0
     rg  = safe(info, "revenueGrowth") or 0
+
     if ni > 0:
         score += 1
     if ocf > 0:
@@ -113,6 +111,7 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
         score += 1
     if gm and gm > 0.2 and rg and rg > 0:
         score += 1
+
     return score
 
 def load_fundamentals_master() -> pd.DataFrame:
@@ -132,8 +131,10 @@ def load_stock_master() -> pd.DataFrame:
 def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
     global fundamentals_lookup
     fundamentals_lookup = {}
+
     if fundamentals_master_df is None or fundamentals_master_df.empty or "Ticker" not in fundamentals_master_df.columns:
         return
+
     tmp = fundamentals_master_df.copy()
     tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
     fundamentals_lookup = {row["TickerKey"]: row for _, row in tmp.iterrows()}
@@ -215,12 +216,14 @@ def build_shareholding_lookup(shareholding_df: pd.DataFrame) -> Dict[str, Dict]:
 def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     if nse_df is None or nse_df.empty:
         return pd.DataFrame()
+
     df = nse_df.copy()
     required_cols = ["FinInstrmTp", "SctySrs", "TckrSymb", "ClsPric", "TtlTradgVol", "TtlTrfVal"]
     for col in required_cols:
         if col not in df.columns:
             st.error(f"NSE bhavcopy CSV is missing required column: {col}")
             return pd.DataFrame()
+
     df = df[df["FinInstrmTp"] == "STK"]
     df = df[df["SctySrs"] == "EQ"]
     if df.empty:
@@ -237,95 +240,24 @@ def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     df["Ticker"] = df["Ticker"].astype(str).str.upper()
     return df.sort_values("Turnover", ascending=False).reset_index(drop=True)
 
-def load_amfi_classification_from_excel(file_or_url) -> pd.DataFrame:
-    df = pd.read_excel(file_or_url)
-    df.columns = [str(c).strip() for c in df.columns]
-
-    symbol_col = None
-    category_col = None
-    company_col = None
-    avg_mcap_col = None
-
-    for c in df.columns:
-        cl = c.lower().strip()
-        if cl in ["nse symbol", "nse symbol ", "nse", "nse code", "nse symbol/code"]:
-            symbol_col = c
-        elif "categorization" in cl or "categorisation" in cl:
-            category_col = c
-        elif "company name" in cl:
-            company_col = c
-        elif "average of all exchanges" in cl or "average market capitalization" in cl:
-            avg_mcap_col = c
-
-    if symbol_col is None:
-        for c in df.columns:
-            if "nse" in c.lower():
-                symbol_col = c
-                break
-
-    if category_col is None:
-        for c in df.columns:
-            if "categor" in c.lower():
-                category_col = c
-                break
-
-    if company_col is None:
-        for c in df.columns:
-            if "company" in c.lower():
-                company_col = c
-                break
-
-    out = pd.DataFrame()
-    out["Ticker"] = df[symbol_col].astype(str).str.upper().str.strip() if symbol_col else None
-    out["AMFI_Category"] = df[category_col].astype(str).str.strip() if category_col else None
-    out["AMFI_Company"] = df[company_col].astype(str).str.strip() if company_col else None
-    out["AMFI_AvgMCap_Cr"] = pd.to_numeric(df[avg_mcap_col], errors="coerce") if avg_mcap_col else None
-    out = out[out["Ticker"].notna()]
-    out = out[out["Ticker"].str.len() > 0]
-    out = out[out["AMFI_Category"].isin(["Large Cap", "Mid Cap", "Small Cap"])]
-    out = out.drop_duplicates(subset=["Ticker"]).reset_index(drop=True)
-    return out
-
-def get_amfi_classification(uploaded_amfi_file) -> pd.DataFrame:
-    if uploaded_amfi_file is not None:
-        try:
-            uploaded_amfi_file.seek(0)
-            return load_amfi_classification_from_excel(uploaded_amfi_file)
-        except Exception as e:
-            st.warning(f"Could not read uploaded AMFI file: {e}")
-    try:
-        return load_amfi_classification_from_excel(AMFI_DEFAULT_URL)
-    except Exception as e:
-        st.warning(f"Could not load AMFI classification from official URL: {e}")
-        return pd.DataFrame()
-
-def filter_by_amfi_category(df: pd.DataFrame, screen_mode: str) -> pd.DataFrame:
-    if df is None or df.empty or screen_mode == "All cap":
-        return df
-    if "AMFI_Category" not in df.columns:
-        return df
-    if screen_mode == "Small cap (AMFI)":
-        return df[df["AMFI_Category"] == "Small Cap"].copy()
-    if screen_mode == "Mid cap (AMFI)":
-        return df[df["AMFI_Category"] == "Mid Cap"].copy()
-    if screen_mode == "Large cap (AMFI)":
-        return df[df["AMFI_Category"] == "Large Cap"].copy()
-    return df
-
 def compute_screen_verdict(
     l1_val, l2_prof, l3_guard, l4_share, l5_guard,
     l1_data_missing, l2_data_missing, l3_data_missing, l4_data_missing, l5_data_missing,
 ):
     layers_missing = [l1_data_missing, l2_data_missing, l3_data_missing, l4_data_missing, l5_data_missing]
     layers_pass = [l1_val, l2_prof, l3_guard, l4_share, l5_guard]
+
     testable_count = sum(1 for m in layers_missing if not m)
     if testable_count < 3:
         return VERDICT_FAIL_NODATA
+
     genuine_failure = any((not p) and (not m) for p, m in zip(layers_pass, layers_missing))
     if genuine_failure:
         return VERDICT_FAIL_GENUINE
+
     if any(layers_missing):
         return VERDICT_PASS_DATAGAP
+
     return VERDICT_PASS
 
 def get_preset_weights(preset_name: str) -> Tuple[int, int, int, int, int]:
@@ -485,7 +417,6 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
         ])
         l5_data_missing = l5_fields_present < 4
 
-        # Hard guardrails: do not let sliders bypass these
         l3_guard = (
             (ocf_pat is not None and ocf_pat >= CONFIG["ocf_pat_min_guard"])
             and
@@ -498,7 +429,6 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
             l1_data_missing, l2_data_missing, l3_data_missing, l4_data_missing, l5_data_missing
         )
 
-        # Weighted ranking scores
         l3_score = 0.0
         if ocf_pat is not None:
             if ocf_pat >= 1.2:
@@ -507,6 +437,7 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
                 l3_score += 0.8
             elif ocf_pat >= 0.5:
                 l3_score += 0.5
+
         if fcf_yield is not None:
             if fcf_yield >= 0.05:
                 l3_score += 1.0
@@ -514,6 +445,7 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
                 l3_score += 0.7
             elif fcf_yield > 0:
                 l3_score += 0.4
+
         if de_ratio is not None:
             if de_ratio <= 0.3:
                 l3_score += 1.0
@@ -521,8 +453,8 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
                 l3_score += 0.8
             elif de_ratio <= 1.0:
                 l3_score += 0.4
-        l3_score = min(l3_score / 3.0, 1.0)
 
+        l3_score = min(l3_score / 3.0, 1.0)
         l5_score = min(quality_raw / 7.0, 1.0) if quality_raw is not None else 0.0
 
         conviction = sum([l1_val, l2_prof, l3_guard, l4_share, l5_guard])
@@ -531,7 +463,10 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
         weighted_score = 0.0
         weighted_score += 8 if l1_val else 0
         weighted_score += 14 if l2_prof else 0
-        weighted_score += weights["l3_ocf_pat"] * (1.0 if ocf_pat is not None and ocf_pat >= 0.8 else 0.0)
+        weighted_score += weights["l3_ocf_pat"] * (
+            1.0 if ocf_pat is not None and ocf_pat >= 0.8 else
+            0.5 if ocf_pat is not None and ocf_pat >= 0.5 else 0.0
+        )
         weighted_score += weights["l3_fcf_yield"] * (
             1.0 if fcf_yield is not None and fcf_yield >= 0.03 else
             0.5 if fcf_yield is not None and fcf_yield > 0 else 0.0
@@ -675,9 +610,11 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
 def build_failure_reason_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
+
     fail_df = df[df["ScreenVerdict"] == VERDICT_FAIL_GENUINE].copy()
     if fail_df.empty:
         return pd.DataFrame()
+
     reason_counts = {
         "L1 Valuation": int((fail_df["L1_Val"] == False).sum()),
         "L2 Profitability": int((fail_df["L2_Prof"] == False).sum()),
@@ -685,22 +622,18 @@ def build_failure_reason_summary(df: pd.DataFrame) -> pd.DataFrame:
         "L4 Shareholding": int((fail_df["L4_Share"] == False).sum()),
         "L5 Guardrail": int((fail_df["L5_Guard"] == False).sum()),
     }
+
     return pd.DataFrame([{"FailureReason": k, "FailCount": v} for k, v in reason_counts.items()]) \
         .sort_values(["FailCount", "FailureReason"], ascending=[False, True]).reset_index(drop=True)
 
-st.title("100X Screener V6 — AMFI + Weighted Quality")
-st.caption("AMFI cap filter + hard quality guardrails + weighted L3/L5 ranking sliders.")
+st.title("100X Screener V6 — No AMFI")
+st.caption("Bhavcopy universe + shareholding CSV + hard quality guardrails + weighted L3/L5 ranking sliders.")
 
 st.sidebar.header("Controls")
 
 min_score = st.sidebar.slider("Minimum conviction score", 0, 5, 4)
 only_pass = st.sidebar.checkbox("Show only final pass names", value=True)
 show_datagap = st.sidebar.checkbox("Also show PASS (Data gaps present)", value=True)
-screen_mode = st.sidebar.radio(
-    "AMFI screen mode",
-    ["Small cap (AMFI)", "Mid cap (AMFI)", "Large cap (AMFI)", "All cap"],
-    index=0,
-)
 max_stocks = st.sidebar.number_input("Final stocks to screen", min_value=10, max_value=500, value=100, step=10)
 feeder_pool_size = st.sidebar.number_input("Feeder pool size from bhavcopy turnover", min_value=50, max_value=1000, value=500, step=50)
 pause_between_calls = st.sidebar.slider("Pause between API calls (seconds)", min_value=0.0, max_value=1.0, value=0.2, step=0.1)
@@ -731,7 +664,6 @@ weights = {
 st.sidebar.markdown("---")
 uploaded_nse_file = st.sidebar.file_uploader("Upload NSE EOD CSV (weekly bhavcopy)", type=["csv"], key="nse_bhavcopy_upload")
 uploaded_sh_file = st.sidebar.file_uploader("Upload CF-Shareholding-Pattern CSV", type=["csv"], key="nse_shareholding_upload")
-uploaded_amfi_file = st.sidebar.file_uploader("Optional: Upload AMFI categorisation Excel", type=["xlsx", "xls"], key="amfi_classification_upload")
 
 with st.expander("How to use the sliders", expanded=False):
     st.markdown("""
@@ -747,19 +679,7 @@ Rule of thumb:
 - Do **not** lower everything together; that only increases noise.
 """)
 
-amfi_lookup_df = get_amfi_classification(uploaded_amfi_file)
-with st.expander("AMFI classification preview", expanded=False):
-    if amfi_lookup_df.empty:
-        st.warning("AMFI classification could not be loaded.")
-    else:
-        st.success(f"Loaded AMFI classification rows: {len(amfi_lookup_df)}")
-        st.dataframe(amfi_lookup_df.head(20), use_container_width=True)
-
 if st.button("Run live screen"):
-    if amfi_lookup_df.empty:
-        st.error("AMFI classification could not be loaded.")
-        st.stop()
-
     if uploaded_sh_file is not None:
         try:
             uploaded_sh_file.seek(0)
@@ -792,12 +712,6 @@ if st.button("Run live screen"):
     if equity_universe_df_local is not None and not equity_universe_df_local.empty:
         feeder_df = equity_universe_df_local.head(int(feeder_pool_size)).copy()
         st.info(f"Using feeder universe: top {len(feeder_df)} stock(s) by NSE turnover.")
-        feeder_df = feeder_df.merge(
-            amfi_lookup_df[["Ticker", "AMFI_Category", "AMFI_AvgMCap_Cr", "AMFI_Company"]],
-            on="Ticker", how="left"
-        )
-        feeder_df = filter_by_amfi_category(feeder_df, screen_mode)
-        st.info(f"Feeder after AMFI filter ({screen_mode}): {len(feeder_df)} stock(s).")
         base_universe = feeder_df.head(int(max_stocks)).copy()
         universe_tickers = base_universe["Ticker"].astype(str).str.upper().tolist()
         tickers_to_screen = [f"{t}.NS" for t in universe_tickers]
@@ -826,14 +740,6 @@ if st.button("Run live screen"):
 
     df = pd.DataFrame(rows)
     screened_count = len(df)
-
-    if not df.empty:
-        df = df.merge(
-            amfi_lookup_df[["Ticker", "AMFI_Category", "AMFI_AvgMCap_Cr", "AMFI_Company"]],
-            on="Ticker", how="left"
-        )
-        df = filter_by_amfi_category(df, screen_mode)
-        st.info(f"Screen mode applied using AMFI ({screen_mode}) — {len(df)} of {screened_count} screened stocks remain.")
 
     if not df.empty and stock_master_df is not None and not stock_master_df.empty:
         merge_cols = [c for c in ["Ticker", "Sector", "SubSector"] if c in stock_master_df.columns]
@@ -904,9 +810,10 @@ if st.button("Run live screen"):
         fail_detail = summary_df_before_pass_filter[
             summary_df_before_pass_filter["ScreenVerdict"] == VERDICT_FAIL_GENUINE
         ][[
-            "Ticker", "AMFI_Category", "MCap_Cr", "Conviction", "WeightedScore",
+            "Ticker", "MCap_Cr", "Conviction", "WeightedScore",
             "FailReasons", "DataGapReasons", "L3_Score_0to1", "L5_Score_0to1"
         ]].copy()
+
         if not fail_detail.empty:
             st.subheader("Failed names summary")
             st.dataframe(
@@ -919,7 +826,7 @@ if st.button("Run live screen"):
         st.download_button(
             "Download CSV",
             data=df.to_csv(index=False),
-            file_name="100x_screener_v6_results.csv",
+            file_name="100x_screener_v6_no_amfi_results.csv",
             mime="text/csv",
         )
     else:
