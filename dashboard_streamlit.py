@@ -139,11 +139,122 @@ def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
     tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
     fundamentals_lookup = {row["TickerKey"]: row for _, row in tmp.iterrows()}
 
-def build_shareholding_lookup(shareholding_df: pd.DataFrame) -> Dict[str, Dict]:
+def build_shareholding_lookup(shareholding_df: pd.DataFrame, stock_master_df: Optional[pd.DataFrame] = None) -> Dict[str, Dict]:
     lookup: Dict[str, Dict] = {}
     if shareholding_df is None or shareholding_df.empty:
         return lookup
 
+    df = shareholding_df.copy()
+    df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
+
+    if SH_COL_COMPANY not in df.columns:
+        st.error(f"Shareholding CSV missing expected column '{SH_COL_COMPANY}'.")
+        return lookup
+
+    def normalise_company_name(s: str) -> str:
+        if s is None:
+            return ""
+        s = str(s).upper().strip()
+        for token in [
+            "LIMITED", "LTD", "LIMITED.", "LTD.",
+            "INDIA", "(INDIA)", "INDIAN",
+            "PRIVATE", "PVT", "PVT.",
+            "&", ",", ".", "-", "/", "(", ")"
+        ]:
+            s = s.replace(token, " ")
+        s = " ".join(s.split())
+        return s
+
+    def pct_val(row, col_name: str) -> Optional[float]:
+        if col_name not in row.index:
+            return None
+        v = row[col_name]
+        try:
+            return float(str(v).replace("%", "").replace(",", "").strip())
+        except Exception:
+            return None
+
+    company_to_row: Dict[str, pd.Series] = {}
+    for _, row in df.iterrows():
+        cname = str(row[SH_COL_COMPANY]).strip()
+        key = normalise_company_name(cname)
+        if key and key not in company_to_row:
+            company_to_row[key] = row
+
+    stock_name_to_ticker: Dict[str, str] = {}
+
+    if stock_master_df is not None and not stock_master_df.empty:
+        temp = stock_master_df.copy()
+        temp.columns = [str(c).strip() for c in temp.columns]
+
+        possible_name_cols = ["Company", "CompanyName", "Company Name", "Name"]
+        name_col = None
+        for c in possible_name_cols:
+            if c in temp.columns:
+                name_col = c
+                break
+
+        if name_col is not None and "Ticker" in temp.columns:
+            for _, row in temp.iterrows():
+                t = str(row["Ticker"]).strip().upper()
+                cname = str(row[name_col]).strip()
+                nkey = normalise_company_name(cname)
+                if t and nkey and nkey not in stock_name_to_ticker:
+                    stock_name_to_ticker[nkey] = t
+
+    for ticker, company_name in TICKER_TO_COMPANY.items():
+        nkey = normalise_company_name(company_name)
+        if nkey and nkey not in stock_name_to_ticker:
+            stock_name_to_ticker[nkey] = ticker
+
+    matched = 0
+
+    for nkey, row in company_to_row.items():
+        ticker = stock_name_to_ticker.get(nkey)
+
+        if ticker is None:
+            for stock_key, stock_ticker in stock_name_to_ticker.items():
+                if len(nkey) >= 8 and (nkey in stock_key or stock_key in nkey):
+                    ticker = stock_ticker
+                    break
+
+        if ticker is None:
+            continue
+
+        promoter_pct  = pct_val(row, SH_COL_PROMOTER)
+        public_pct    = pct_val(row, SH_COL_PUBLIC)
+        emp_pct       = pct_val(row, SH_COL_EMP_TRUST)
+        as_on_date    = str(row[SH_COL_AS_ON]).strip() if SH_COL_AS_ON in row.index else None
+        revision_date = str(row[SH_COL_REVISION]).strip() if SH_COL_REVISION in row.index else None
+        action_link   = str(row[SH_COL_ACTION]).strip() if SH_COL_ACTION in row.index else None
+
+        parts = [p for p in [promoter_pct, public_pct, emp_pct] if p is not None]
+        total_own = round(sum(parts), 2) if parts else None
+
+        ownership_valid = (
+            promoter_pct is not None
+            and public_pct is not None
+            and total_own is not None
+            and abs(total_own - 100.0) < 5.0
+        )
+
+        lookup[ticker] = {
+            "PromoterPct_NSE": promoter_pct,
+            "PublicPct_NSE": public_pct,
+            "EmployeeTrustPct_NSE": emp_pct,
+            "OwnershipTotalPct": total_own,
+            "OwnershipDataValid": ownership_valid,
+            "ShareholdingStatus": "NSE CSV",
+            "ShareholdingAsOnDate": as_on_date,
+            "ShareholdingRevisionDate": revision_date,
+            "ShareholdingActionLink": action_link,
+            "HasShareholdingData": True,
+        }
+        matched += 1
+
+    st.info(f"Expanded shareholding lookup built: {matched} ticker(s) matched from uploaded CSV.")
+
+    return lookup
     df = shareholding_df.copy()
     df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
 
@@ -680,13 +791,13 @@ Rule of thumb:
 """)
 
 if st.button("Run live screen"):
-    if uploaded_sh_file is not None:
+        if uploaded_sh_file is not None:
         try:
             uploaded_sh_file.seek(0)
             sh_raw_df = pd.read_csv(uploaded_sh_file)
             sh_raw_df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in sh_raw_df.columns]
-            shareholding_lookup = build_shareholding_lookup(sh_raw_df)
-            st.info(f"Shareholding lookup built: {len(shareholding_lookup)} ticker(s) matched → {list(shareholding_lookup.keys())}")
+            shareholding_lookup = build_shareholding_lookup(sh_raw_df, stock_master_df)
+            st.info(f"Shareholding lookup ready with {len(shareholding_lookup)} ticker(s).")
         except Exception as e:
             st.warning(f"Could not build shareholding lookup: {e}")
             shareholding_lookup = {}
