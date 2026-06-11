@@ -60,11 +60,13 @@ DEFAULT_UNIVERSE: List[str] = [
 fundamentals_lookup: Dict[str, Any] = {}
 shareholding_lookup: Dict[str, Dict] = {}
 
+
 def safe(info: Dict[str, Any], key: str, default=None):
     v = info.get(key, default)
     if v in (None, "N/A", "NaN"):
         return default
     return v
+
 
 def parse_percent_or_float(value) -> Optional[float]:
     if value is None or pd.isna(value):
@@ -86,16 +88,17 @@ def parse_percent_or_float(value) -> Optional[float]:
             return None
     return num / 100.0 if num > 1.5 else num
 
+
 def approx_quality_score(info: Dict[str, Any]) -> int:
     score = 0
-    ni  = safe(info, "netIncomeToCommon") or 0
+    ni = safe(info, "netIncomeToCommon") or 0
     ocf = safe(info, "operatingCashflow") or 0
     roa = safe(info, "returnOnAssets") or 0
     ltd = safe(info, "longTermDebt") or 0
-    ta  = safe(info, "totalAssets") or 0
-    cr  = safe(info, "currentRatio") or 0
-    gm  = safe(info, "grossMargins") or 0
-    rg  = safe(info, "revenueGrowth") or 0
+    ta = safe(info, "totalAssets") or 0
+    cr = safe(info, "currentRatio") or 0
+    gm = safe(info, "grossMargins") or 0
+    rg = safe(info, "revenueGrowth") or 0
 
     if ni > 0:
         score += 1
@@ -114,6 +117,7 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
 
     return score
 
+
 def load_fundamentals_master() -> pd.DataFrame:
     try:
         return pd.read_csv("fundamentals_master.csv")
@@ -121,12 +125,14 @@ def load_fundamentals_master() -> pd.DataFrame:
         st.warning(f"Could not load fundamentals_master.csv: {e}")
         return pd.DataFrame()
 
+
 def load_stock_master() -> pd.DataFrame:
     try:
         return pd.read_csv("stock_master.csv")
     except Exception as e:
         st.warning(f"Could not load stock_master.csv: {e}")
         return pd.DataFrame()
+
 
 def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
     global fundamentals_lookup
@@ -139,13 +145,17 @@ def rebuild_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> None:
     tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
     fundamentals_lookup = {row["TickerKey"]: row for _, row in tmp.iterrows()}
 
-def build_shareholding_lookup(shareholding_df: pd.DataFrame, stock_master_df: Optional[pd.DataFrame] = None) -> Dict[str, Dict]:
+
+def build_shareholding_lookup(
+    shareholding_df: pd.DataFrame,
+    stock_master_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, Dict]:
     lookup: Dict[str, Dict] = {}
     if shareholding_df is None or shareholding_df.empty:
         return lookup
 
     df = shareholding_df.copy()
-    df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
+    df.columns = [str(c).strip().lstrip("\ufeff").strip('"') for c in df.columns]
 
     if SH_COL_COMPANY not in df.columns:
         st.error(f"Shareholding CSV missing expected column '{SH_COL_COMPANY}'.")
@@ -165,7 +175,7 @@ def build_shareholding_lookup(shareholding_df: pd.DataFrame, stock_master_df: Op
         s = " ".join(s.split())
         return s
 
-    def pct_val(row, col_name: str) -> Optional[float]:
+    def pct_val(row: pd.Series, col_name: str) -> Optional[float]:
         if col_name not in row.index:
             return None
         v = row[col_name]
@@ -188,11 +198,7 @@ def build_shareholding_lookup(shareholding_df: pd.DataFrame, stock_master_df: Op
         temp.columns = [str(c).strip() for c in temp.columns]
 
         possible_name_cols = ["Company", "CompanyName", "Company Name", "Name"]
-        name_col = None
-        for c in possible_name_cols:
-            if c in temp.columns:
-                name_col = c
-                break
+        name_col = next((c for c in possible_name_cols if c in temp.columns), None)
 
         if name_col is not None and "Ticker" in temp.columns:
             for _, row in temp.iterrows():
@@ -221,12 +227,12 @@ def build_shareholding_lookup(shareholding_df: pd.DataFrame, stock_master_df: Op
         if ticker is None:
             continue
 
-        promoter_pct  = pct_val(row, SH_COL_PROMOTER)
-        public_pct    = pct_val(row, SH_COL_PUBLIC)
-        emp_pct       = pct_val(row, SH_COL_EMP_TRUST)
-        as_on_date    = str(row[SH_COL_AS_ON]).strip() if SH_COL_AS_ON in row.index else None
+        promoter_pct = pct_val(row, SH_COL_PROMOTER)
+        public_pct = pct_val(row, SH_COL_PUBLIC)
+        emp_pct = pct_val(row, SH_COL_EMP_TRUST)
+        as_on_date = str(row[SH_COL_AS_ON]).strip() if SH_COL_AS_ON in row.index else None
         revision_date = str(row[SH_COL_REVISION]).strip() if SH_COL_REVISION in row.index else None
-        action_link   = str(row[SH_COL_ACTION]).strip() if SH_COL_ACTION in row.index else None
+        action_link = str(row[SH_COL_ACTION]).strip() if SH_COL_ACTION in row.index else None
 
         parts = [p for p in [promoter_pct, public_pct, emp_pct] if p is not None]
         total_own = round(sum(parts), 2) if parts else None
@@ -253,76 +259,8 @@ def build_shareholding_lookup(shareholding_df: pd.DataFrame, stock_master_df: Op
         matched += 1
 
     st.info(f"Expanded shareholding lookup built: {matched} ticker(s) matched from uploaded CSV.")
-
     return lookup
-    df = shareholding_df.copy()
-    df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
 
-    if SH_COL_COMPANY not in df.columns:
-        st.error(f"Shareholding CSV missing expected column '{SH_COL_COMPANY}'.")
-        return lookup
-
-    def normalise(s: str) -> str:
-        return s.lower().strip()
-
-    company_map: Dict[str, pd.Series] = {}
-    for _, row in df.iterrows():
-        cname = str(row[SH_COL_COMPANY]).strip()
-        company_map[normalise(cname)] = row
-
-    for ticker, company_name in TICKER_TO_COMPANY.items():
-        norm_name = normalise(company_name)
-        row = company_map.get(norm_name)
-
-        if row is None:
-            for ckey, crow in company_map.items():
-                if norm_name[:25] in ckey or ckey[:25] in norm_name:
-                    row = crow
-                    break
-
-        if row is None:
-            continue
-
-        def pct_val(col_name: str) -> Optional[float]:
-            if col_name not in row.index:
-                return None
-            v = row[col_name]
-            try:
-                return float(str(v).replace("%", "").strip())
-            except Exception:
-                return None
-
-        promoter_pct  = pct_val(SH_COL_PROMOTER)
-        public_pct    = pct_val(SH_COL_PUBLIC)
-        emp_pct       = pct_val(SH_COL_EMP_TRUST)
-        as_on_date    = str(row[SH_COL_AS_ON]).strip() if SH_COL_AS_ON in row.index else None
-        revision_date = str(row[SH_COL_REVISION]).strip() if SH_COL_REVISION in row.index else None
-        action_link   = str(row[SH_COL_ACTION]).strip() if SH_COL_ACTION in row.index else None
-
-        parts = [p for p in [promoter_pct, public_pct, emp_pct] if p is not None]
-        total_own = round(sum(parts), 2) if parts else None
-
-        ownership_valid = (
-            promoter_pct is not None
-            and public_pct is not None
-            and total_own is not None
-            and abs(total_own - 100.0) < 5.0
-        )
-
-        lookup[ticker] = {
-            "PromoterPct_NSE": promoter_pct,
-            "PublicPct_NSE": public_pct,
-            "EmployeeTrustPct_NSE": emp_pct,
-            "OwnershipTotalPct": total_own,
-            "OwnershipDataValid": ownership_valid,
-            "ShareholdingStatus": "NSE CSV",
-            "ShareholdingAsOnDate": as_on_date,
-            "ShareholdingRevisionDate": revision_date,
-            "ShareholdingActionLink": action_link,
-            "HasShareholdingData": True,
-        }
-
-    return lookup
 
 def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     if nse_df is None or nse_df.empty:
@@ -351,6 +289,7 @@ def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     df["Ticker"] = df["Ticker"].astype(str).str.upper()
     return df.sort_values("Turnover", ascending=False).reset_index(drop=True)
 
+
 def compute_screen_verdict(
     l1_val, l2_prof, l3_guard, l4_share, l5_guard,
     l1_data_missing, l2_data_missing, l3_data_missing, l4_data_missing, l5_data_missing,
@@ -371,6 +310,7 @@ def compute_screen_verdict(
 
     return VERDICT_PASS
 
+
 def get_preset_weights(preset_name: str) -> Tuple[int, int, int, int, int]:
     presets = {
         "Balanced": (4, 3, 4, 4, 3),
@@ -382,6 +322,7 @@ def get_preset_weights(preset_name: str) -> Tuple[int, int, int, int, int]:
     }
     return presets[preset_name]
 
+
 def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
     try:
         yf_ticker = yf.Ticker(ticker)
@@ -390,24 +331,24 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
         sh_data = shareholding_lookup.get(base_ticker)
         info = yf_ticker.info
 
-        pe           = safe(info, "trailingPE")
-        pb           = safe(info, "priceToBook")
-        ev_ebitda    = safe(info, "enterpriseToEbitda")
-        roe          = safe(info, "returnOnEquity")
-        roa          = safe(info, "returnOnAssets")
-        opm          = safe(info, "operatingMargins")
-        revg         = safe(info, "revenueGrowth")
-        earng        = safe(info, "earningsGrowth")
-        fcf          = safe(info, "freeCashflow")
-        ocf          = safe(info, "operatingCashflow")
-        ni           = safe(info, "netIncomeToCommon")
-        de           = safe(info, "debtToEquity")
-        insider      = safe(info, "heldPercentInsiders")
-        mcap_raw     = safe(info, "marketCap") or 0
-        price        = safe(info, "regularMarketPrice") or safe(info, "currentPrice")
-        sector       = safe(info, "sector", "N/A")
-        ebit         = safe(info, "ebit")
-        ta           = safe(info, "totalAssets")
+        pe = safe(info, "trailingPE")
+        pb = safe(info, "priceToBook")
+        ev_ebitda = safe(info, "enterpriseToEbitda")
+        roe = safe(info, "returnOnEquity")
+        roa = safe(info, "returnOnAssets")
+        opm = safe(info, "operatingMargins")
+        revg = safe(info, "revenueGrowth")
+        earng = safe(info, "earningsGrowth")
+        fcf = safe(info, "freeCashflow")
+        ocf = safe(info, "operatingCashflow")
+        ni = safe(info, "netIncomeToCommon")
+        de = safe(info, "debtToEquity")
+        insider = safe(info, "heldPercentInsiders")
+        mcap_raw = safe(info, "marketCap") or 0
+        price = safe(info, "regularMarketPrice") or safe(info, "currentPrice")
+        sector = safe(info, "sector", "N/A")
+        ebit = safe(info, "ebit")
+        ta = safe(info, "totalAssets")
         current_liab = safe(info, "totalCurrentLiabilities")
 
         mcap_cr = mcap_raw / 1e7 if mcap_raw else None
@@ -718,6 +659,7 @@ def evaluate_stock(ticker: str, weights: Dict[str, int]) -> Dict[str, Any]:
             "Error": str(e),
         }
 
+
 def build_failure_reason_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -734,8 +676,12 @@ def build_failure_reason_summary(df: pd.DataFrame) -> pd.DataFrame:
         "L5 Guardrail": int((fail_df["L5_Guard"] == False).sum()),
     }
 
-    return pd.DataFrame([{"FailureReason": k, "FailCount": v} for k, v in reason_counts.items()]) \
-        .sort_values(["FailCount", "FailureReason"], ascending=[False, True]).reset_index(drop=True)
+    return (
+        pd.DataFrame([{"FailureReason": k, "FailCount": v} for k, v in reason_counts.items()])
+        .sort_values(["FailCount", "FailureReason"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
 
 st.title("100X Screener V6 — No AMFI")
 st.caption("Bhavcopy universe + shareholding CSV + hard quality guardrails + weighted L3/L5 ranking sliders.")
@@ -800,8 +746,8 @@ if st.button("Run live screen"):
             uploaded_sh_file.seek(0)
             sh_raw_df = pd.read_csv(uploaded_sh_file)
             sh_raw_df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in sh_raw_df.columns]
-            shareholding_lookup = build_shareholding_lookup(sh_raw_df)
-            st.info(f"Shareholding lookup built: {len(shareholding_lookup)} ticker(s) matched → {list(shareholding_lookup.keys())}")
+            shareholding_lookup = build_shareholding_lookup(sh_raw_df, stock_master_df)
+            st.info(f"Shareholding lookup ready with {len(shareholding_lookup)} ticker(s).")
         except Exception as e:
             st.warning(f"Could not build shareholding lookup: {e}")
             shareholding_lookup = {}
@@ -840,7 +786,7 @@ if st.button("Run live screen"):
 
     with st.spinner("Fetching live data from Yahoo Finance..."):
         for i, ticker in enumerate(tickers_to_screen):
-            status_text.text(f"Screening {ticker} ({i+1}/{total_tickers})...")
+            status_text.text(f"Screening {ticker} ({i + 1}/{total_tickers})...")
             row = evaluate_stock(ticker, weights)
             rows.append(row)
             progress_bar.progress((i + 1) / total_tickers)
@@ -942,6 +888,5 @@ if st.button("Run live screen"):
         )
     else:
         st.info("No stocks passed the current filters under current guardrails and weights.")
-
 else:
     st.info("Click **Run live screen** to start.")
