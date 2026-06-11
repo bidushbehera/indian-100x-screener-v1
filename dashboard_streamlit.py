@@ -791,23 +791,23 @@ Rule of thumb:
 """)
 
 if st.button("Run live screen"):
+    fundamentals_master_df = load_fundamentals_master()
+    stock_master_df = load_stock_master()
+    rebuild_fundamentals_lookup(fundamentals_master_df)
+
     if uploaded_sh_file is not None:
         try:
             uploaded_sh_file.seek(0)
             sh_raw_df = pd.read_csv(uploaded_sh_file)
             sh_raw_df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in sh_raw_df.columns]
-            shareholding_lookup = build_shareholding_lookup(sh_raw_df, stock_master_df)
-            st.info(f"Shareholding lookup ready with {len(shareholding_lookup)} ticker(s).")
+            shareholding_lookup = build_shareholding_lookup(sh_raw_df)
+            st.info(f"Shareholding lookup built: {len(shareholding_lookup)} ticker(s) matched → {list(shareholding_lookup.keys())}")
         except Exception as e:
             st.warning(f"Could not build shareholding lookup: {e}")
             shareholding_lookup = {}
     else:
         shareholding_lookup = {}
         st.warning("No shareholding CSV uploaded. L4 will use yfinance fallback.")
-
-    fundamentals_master_df = load_fundamentals_master()
-    stock_master_df = load_stock_master()
-    rebuild_fundamentals_lookup(fundamentals_master_df)
 
     if uploaded_nse_file is not None:
         try:
