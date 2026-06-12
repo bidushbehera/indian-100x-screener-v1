@@ -1,2 +1,7 @@
 pandas>=2.0.0
 yfinance==0.2.58
+streamlit>=1.36
+requests>=2.32
+python-dateutil>=2.9
+lxml>=5.2
+openpyxl>=3.1
