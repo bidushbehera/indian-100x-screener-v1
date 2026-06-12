@@ -1,0 +1,33 @@
+name: 100x-screener-scheduled
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 14 * * 6'
+jobs:
+  run-screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run automation
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+        run: python automation_runner.py --scheduled
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-screen-run
+          path: |
+            data/runs/
+            data/cache/
