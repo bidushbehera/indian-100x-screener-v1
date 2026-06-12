@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import smtplib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,10 +24,10 @@ MANUAL_SECTOR_DIR = DATA_DIR / "manual_uploads" / "sector_reports"
 for p in [CACHE_DIR, RUNS_DIR, MANUAL_COMPANY_DIR, MANUAL_SECTOR_DIR]:
     p.mkdir(parents=True, exist_ok=True)
 
-SCHEMA_VERSION = "phase2_v1"
+SCHEMA_VERSION = "phase2_v2"
 CACHE_MAX_AGE_DAYS = 30
 
-CONFIG = {
+CONFIG: Dict[str, Any] = {
     "pe_max": 20.0,
     "peg_max": 1.0,
     "ev_ebitda_max": 12.0,
@@ -48,6 +49,19 @@ DEFAULT_UNIVERSE = [
     "LLOYDSME.NS", "POLYCAB.NS", "DEEPAKNTR.NS", "CGPOWER.NS", "TANLA.NS",
     "KPITTECH.NS", "CDSL.NS", "CAMS.NS", "IRCTC.NS", "OLECTRA.NS",
 ]
+
+TICKER_TO_COMPANY: Dict[str, str] = {
+    "POLYCAB": "Polycab India Limited",
+    "TANLA": "Tanla Platforms Limited",
+    "KPITTECH": "KPIT Technologies Limited",
+    "CDSL": "Central Depository Services (India) Limited",
+    "CAMS": "Computer Age Management Services Limited",
+    "IRCTC": "Indian Railway Catering And Tourism Corporation Limited",
+    "CGPOWER": "CG Power and Industrial Solutions Limited",
+    "DEEPAKNTR": "Deepak Nitrite Limited",
+    "OLECTRA": "Olectra Greentech Limited",
+    "LLOYDSME": "Lloyds Metals And Energy Limited",
+}
 
 QUARTERLY_REPORT_SOURCES = [
     ("NSE Financial Results", "https://www.nseindia.com/companies-listing/corporate-filings-financial-results"),
@@ -96,6 +110,8 @@ def iso_now():
 
 
 def safe(info: Dict[str, Any], key: str, default=None):
+    if info is None:
+        return default
     v = info.get(key, default)
     if v in (None, "N/A", "NaN"):
         return default
@@ -106,7 +122,7 @@ def parse_percent_or_float(value):
     if value is None or pd.isna(value):
         return None
     if isinstance(value, str):
-        text = value.strip().replace("%", "")
+        text = value.strip().replace("%", "").replace(",", "")
         if not text:
             return None
         try:
@@ -119,6 +135,15 @@ def parse_percent_or_float(value):
         except Exception:
             return None
     return num / 100.0 if num > 1.5 else num
+
+
+def parse_float(value):
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except Exception:
+        return None
 
 
 def file_age_days(path: Path) -> Optional[int]:
@@ -134,7 +159,6 @@ def is_cache_fresh(path: Path) -> bool:
 
 
 def send_email(subject: str, html_body: str):
-    import os
     host = os.getenv("SMTP_HOST")
     port = os.getenv("SMTP_PORT")
     username = os.getenv("SMTP_USERNAME")
@@ -232,85 +256,140 @@ def build_nse_equity_universe(nse_df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values("Turnover", ascending=False).reset_index(drop=True)
 
 
+def load_csv_if_exists(path: Path) -> pd.DataFrame:
+    if path.exists():
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
+def load_fundamentals_master() -> pd.DataFrame:
+    return load_csv_if_exists(BASE_DIR / "fundamentals_master.csv")
+
+
+def load_stock_master() -> pd.DataFrame:
+    return load_csv_if_exists(BASE_DIR / "stock_master.csv")
+
+
+def build_fundamentals_lookup(fundamentals_master_df: pd.DataFrame) -> Dict[str, Any]:
+    lookup = {}
+    if fundamentals_master_df is None or fundamentals_master_df.empty or "Ticker" not in fundamentals_master_df.columns:
+        return lookup
+    tmp = fundamentals_master_df.copy()
+    tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
+    lookup = {row["TickerKey"]: row for _, row in tmp.iterrows()}
+    return lookup
+
+
 def build_shareholding_lookup(shareholding_df: pd.DataFrame, stock_master_df: Optional[pd.DataFrame] = None) -> Dict[str, Dict]:
     lookup = {}
     if shareholding_df is None or shareholding_df.empty:
         return lookup
 
     df = shareholding_df.copy()
-    df.columns = [c.strip().lstrip("\ufeff").strip('"') for c in df.columns]
+    df.columns = [str(c).strip().lstrip("\ufeff").strip('"') for c in df.columns]
+
     if SH_COL_COMPANY not in df.columns:
         return lookup
 
     company_to_row = {}
     for _, row in df.iterrows():
-        key = normalise_company_name(str(row[SH_COL_COMPANY]).strip())
+        cname = str(row[SH_COL_COMPANY]).strip()
+        key = normalise_company_name(cname)
         if key and key not in company_to_row:
             company_to_row[key] = row
 
     stock_name_to_ticker = {}
     if stock_master_df is not None and not stock_master_df.empty:
-        name_col = next((c for c in ["Company", "CompanyName", "Company Name", "Name"] if c in stock_master_df.columns), None)
-        if name_col and "Ticker" in stock_master_df.columns:
-            for _, row in stock_master_df.iterrows():
-                stock_name_to_ticker[normalise_company_name(row[name_col])] = str(row["Ticker"]).upper()
+        temp = stock_master_df.copy()
+        temp.columns = [str(c).strip() for c in temp.columns]
+        possible_name_cols = ["Company", "CompanyName", "Company Name", "Name"]
+        name_col = next((c for c in possible_name_cols if c in temp.columns), None)
+
+        if name_col is not None and "Ticker" in temp.columns:
+            for _, row in temp.iterrows():
+                t = str(row["Ticker"]).strip().upper()
+                cname = str(row[name_col]).strip()
+                nkey = normalise_company_name(cname)
+                if t and nkey and nkey not in stock_name_to_ticker:
+                    stock_name_to_ticker[nkey] = t
+
+    for ticker, company_name in TICKER_TO_COMPANY.items():
+        nkey = normalise_company_name(company_name)
+        if nkey and nkey not in stock_name_to_ticker:
+            stock_name_to_ticker[nkey] = ticker
 
     for nkey, row in company_to_row.items():
         ticker = stock_name_to_ticker.get(nkey)
-        if not ticker:
+
+        if ticker is None:
+            for stock_key, stock_ticker in stock_name_to_ticker.items():
+                if len(nkey) >= 8 and (nkey in stock_key or stock_key in nkey):
+                    ticker = stock_ticker
+                    break
+
+        if ticker is None:
             continue
 
-        def pct_val(col):
+        def pct_val(col_name: str) -> Optional[float]:
+            if col_name not in row.index:
+                return None
+            v = row[col_name]
             try:
-                return float(str(row[col]).replace("%", "").replace(",", "").strip())
+                return float(str(v).replace("%", "").replace(",", "").strip())
             except Exception:
                 return None
 
         promoter_pct = pct_val(SH_COL_PROMOTER)
         public_pct = pct_val(SH_COL_PUBLIC)
         emp_pct = pct_val(SH_COL_EMP_TRUST)
+        as_on_date = str(row[SH_COL_AS_ON]).strip() if SH_COL_AS_ON in row.index else None
+        revision_date = str(row[SH_COL_REVISION]).strip() if SH_COL_REVISION in row.index else None
+        action_link = str(row[SH_COL_ACTION]).strip() if SH_COL_ACTION in row.index else None
+
         parts = [p for p in [promoter_pct, public_pct, emp_pct] if p is not None]
-        total = round(sum(parts), 2) if parts else None
+        total_own = round(sum(parts), 2) if parts else None
+
+        ownership_valid = (
+            promoter_pct is not None
+            and public_pct is not None
+            and total_own is not None
+            and abs(total_own - 100.0) < 5.0
+        )
 
         lookup[ticker] = {
             "PromoterPct_NSE": promoter_pct,
             "PublicPct_NSE": public_pct,
             "EmployeeTrustPct_NSE": emp_pct,
-            "OwnershipTotalPct": total,
-            "OwnershipDataValid": promoter_pct is not None and public_pct is not None and total is not None and abs(total - 100.0) < 5.0,
-            "ShareholdingAsOnDate": str(row[SH_COL_AS_ON]).strip() if SH_COL_AS_ON in row.index else None,
-            "ShareholdingRevisionDate": str(row[SH_COL_REVISION]).strip() if SH_COL_REVISION in row.index else None,
-            "ShareholdingActionLink": str(row[SH_COL_ACTION]).strip() if SH_COL_ACTION in row.index else None,
+            "OwnershipTotalPct": total_own,
+            "OwnershipDataValid": ownership_valid,
             "ShareholdingStatus": "NSE CSV",
+            "ShareholdingAsOnDate": as_on_date,
+            "ShareholdingRevisionDate": revision_date,
+            "ShareholdingActionLink": action_link,
             "HasShareholdingData": True,
         }
 
     return lookup
 
 
-def approx_quality_score(info: Dict[str, Any]) -> int:
+def approx_quality_score_from_metrics(roe, roa, ocf_pat, de_ratio, opm, revg):
     score = 0
-    ni = safe(info, "netIncomeToCommon") or 0
-    ocf = safe(info, "operatingCashflow") or 0
-    roa = safe(info, "returnOnAssets") or 0
-    ltd = safe(info, "longTermDebt") or 0
-    ta = safe(info, "totalAssets") or 0
-    cr = safe(info, "currentRatio") or 0
-    gm = safe(info, "grossMargins") or 0
-    rg = safe(info, "revenueGrowth") or 0
-    if ni > 0:
+    if roe is not None and roe > 0.18:
         score += 1
-    if ocf > 0:
+    if roa is not None and roa > 0.05:
         score += 1
-    if roa and roa > 0.05:
+    if ocf_pat is not None and ocf_pat > 0:
         score += 1
-    if ocf > ni > 0:
+    if ocf_pat is not None and ocf_pat >= 1.0:
         score += 1
-    if ta > 0 and (ltd / ta) < 0.3:
+    if de_ratio is not None and de_ratio <= 0.5:
         score += 1
-    if cr and cr > 1.5:
+    if opm is not None and opm > 0.15:
         score += 1
-    if gm and gm > 0.2 and rg and rg > 0:
+    if revg is not None and revg > 0:
         score += 1
     return score
 
@@ -322,167 +401,336 @@ def compute_screen_verdict(l1_val, l2_prof, l3_guard, l4_share, l5_guard, l1_dat
 
     if testable_count < 3:
         return VERDICT_FAIL_NODATA
-    if any((not p) and (not m) for p, m in zip(layers_pass, layers_missing)):
+
+    genuine_failure = any((not p) and (not m) for p, m in zip(layers_pass, layers_missing))
+    if genuine_failure:
         return VERDICT_FAIL_GENUINE
+
     if any(layers_missing):
         return VERDICT_PASS_DATAGAP
+
     return VERDICT_PASS
 
 
-def evaluate_stock(ticker: str, fundamentals_lookup: Dict[str, Any], shareholding_lookup: Dict[str, Dict]) -> Dict[str, Any]:
+def get_price_from_history(ticker: str) -> Tuple[Optional[float], Optional[str]]:
     try:
-        info = yf.Ticker(ticker).info
-        base_ticker = ticker.replace(".NS", "").upper()
-        fund_row = fundamentals_lookup.get(base_ticker)
-        sh_data = shareholding_lookup.get(base_ticker)
-
-        pe = safe(info, "trailingPE")
-        pb = safe(info, "priceToBook")
-        ev_ebitda = safe(info, "enterpriseToEbitda")
-        roe = safe(info, "returnOnEquity")
-        roa = safe(info, "returnOnAssets")
-        opm = safe(info, "operatingMargins")
-        revg = safe(info, "revenueGrowth")
-        earng = safe(info, "earningsGrowth")
-        fcf = safe(info, "freeCashflow")
-        ocf = safe(info, "operatingCashflow")
-        ni = safe(info, "netIncomeToCommon")
-        de = safe(info, "debtToEquity")
-        insider = safe(info, "heldPercentInsiders")
-        mcap_raw = safe(info, "marketCap") or 0
-        price = safe(info, "regularMarketPrice") or safe(info, "currentPrice")
-        ebit = safe(info, "ebit")
-        ta = safe(info, "totalAssets")
-        current_liab = safe(info, "totalCurrentLiabilities")
-        sector = safe(info, "sector", "N/A")
-
-        mcap_cr = mcap_raw / 1e7 if mcap_raw else None
-
-        roce = None
-        if ebit and ta and current_liab is not None:
-            cap_emp = ta - current_liab
-            if cap_emp > 0:
-                roce = ebit / cap_emp
-
-        if fund_row is not None:
-            for fm_col, var_name in [("ROE_Latest", "roe"), ("ROCE_Latest", "roce"), ("OPM_Latest", "opm"), ("Revenue_CAGR_AllYears", "revg"), ("PAT_CAGR_AllYears", "earng")]:
-                if fm_col in fund_row.index:
-                    v = parse_percent_or_float(fund_row[fm_col])
-                    if v is not None:
-                        if var_name == "roe":
-                            roe = v
-                        elif var_name == "roce":
-                            roce = v
-                        elif var_name == "opm":
-                            opm = v
-                        elif var_name == "revg":
-                            revg = v
-                        elif var_name == "earng":
-                            earng = v
-
-        peg = pe / (earng * 100.0) if pe and earng and earng > 0 else None
-        ocf_pat = ocf / ni if ocf and ni and ni > 0 else None
-        fcf_yield = fcf / mcap_raw if fcf and mcap_raw else None
-        de_ratio = float(de) if de is not None and de >= 0 and float(de) <= 10 else None
-        quality_raw = approx_quality_score(info)
-
-        promoter_pct_nse = sh_data.get("PromoterPct_NSE") if sh_data else None
-        if promoter_pct_nse is not None:
-            l4_share = sh_data.get("OwnershipDataValid", False) and (promoter_pct_nse / 100.0) >= CONFIG["promoter_min"]
-            l4_data_missing = False
-            share_status = "NSE CSV"
-        else:
-            l4_share = insider is not None and insider > CONFIG["insider_min"]
-            l4_data_missing = insider is None
-            share_status = "yfinance (fallback)" if insider is not None else "Not available"
-
-        l1_checks = [
-            pe is not None and pe < CONFIG["pe_max"],
-            peg is not None and peg < CONFIG["peg_max"],
-            ev_ebitda is not None and ev_ebitda < CONFIG["ev_ebitda_max"],
-            pb is not None and pb < CONFIG["pb_max"],
-            mcap_cr is not None,
-        ]
-        l1_available = [pe is not None, peg is not None, ev_ebitda is not None, pb is not None, mcap_cr is not None]
-        l1_val = sum(l1_checks) >= 3
-        l1_data_missing = sum(l1_available) < 3
-
-        l2_checks = [
-            roce is not None and roce > CONFIG["roce_min"],
-            roe is not None and roe > CONFIG["roe_min"],
-            roa is not None and roa > CONFIG["roa_min"],
-            opm is not None and opm > CONFIG["opm_min"],
-            revg is not None and revg > CONFIG["rev_growth_min"],
-            earng is not None and earng > CONFIG["earn_growth_min"],
-        ]
-        l2_available = [roce is not None, roe is not None, roa is not None, opm is not None, revg is not None, earng is not None]
-        l2_prof = sum(l2_checks) >= 4
-        l2_data_missing = sum(l2_available) < 4
-
-        l3_data_missing = sum([ocf_pat is not None, fcf_yield is not None, de_ratio is not None]) < 2
-        l5_fields_present = sum([
-            safe(info, "netIncomeToCommon") is not None,
-            safe(info, "operatingCashflow") is not None,
-            safe(info, "returnOnAssets") is not None,
-            safe(info, "longTermDebt") is not None,
-            safe(info, "totalAssets") is not None,
-            safe(info, "currentRatio") is not None,
-            safe(info, "grossMargins") is not None,
-        ])
-        l5_data_missing = l5_fields_present < 4
-
-        l3_guard = (ocf_pat is not None and ocf_pat >= CONFIG["ocf_pat_min_guard"]) and (de_ratio is None or de_ratio <= CONFIG["de_max_guard"])
-        l5_guard = quality_raw >= CONFIG["quality_min_guard"]
-
-        verdict = compute_screen_verdict(
-            l1_val, l2_prof, l3_guard, l4_share, l5_guard,
-            l1_data_missing, l2_data_missing, l3_data_missing, l4_data_missing, l5_data_missing
-        )
-
-        conviction = sum([l1_val, l2_prof, l3_guard, l4_share, l5_guard])
-
-        weighted_score = 0.0
-        weighted_score += 8 if l1_val else 0
-        weighted_score += 14 if l2_prof else 0
-        weighted_score += 4 * (1.0 if ocf_pat is not None and ocf_pat >= 0.8 else 0.5 if ocf_pat is not None and ocf_pat >= 0.5 else 0.0)
-        weighted_score += 3 * (1.0 if fcf_yield is not None and fcf_yield >= 0.03 else 0.5 if fcf_yield is not None and fcf_yield > 0 else 0.0)
-        weighted_score += 4 * (1.0 if de_ratio is not None and de_ratio <= 0.5 else 0.5 if de_ratio is not None and de_ratio <= 1.0 else 0.0 if de_ratio is not None else 0.25)
-        weighted_score += 4 * min(quality_raw / 7.0, 1.0)
-        weighted_score += 3 * (1.0 if l4_share else 0.0)
-
-        return {
-            "Ticker": base_ticker,
-            "Sector": sector,
-            "Price": price,
-            "MCap_Cr": round(mcap_cr, 1) if mcap_cr is not None else None,
-            "PE": round(pe, 2) if pe is not None else None,
-            "PB": round(pb, 2) if pb is not None else None,
-            "PEG": round(peg, 2) if peg is not None else None,
-            "ROCE_pct": round(roce * 100, 1) if roce is not None else None,
-            "ROE_pct": round(roe * 100, 1) if roe is not None else None,
-            "ROA_pct": round(roa * 100, 1) if roa is not None else None,
-            "OPM_pct": round(opm * 100, 1) if opm is not None else None,
-            "RevGrowth_pct": round(revg * 100, 1) if revg is not None else None,
-            "EarnGrowth_pct": round(earng * 100, 1) if earng is not None else None,
-            "OCF_PAT": round(ocf_pat, 2) if ocf_pat is not None else None,
-            "FCFYield_pct": round(fcf_yield * 100, 2) if fcf_yield is not None else None,
-            "DebtToEquity_raw": round(de_ratio, 2) if de_ratio is not None else None,
-            "PromoterPct_NSE": promoter_pct_nse,
-            "ShareholdingStatus": share_status,
-            "ScreenVerdict": verdict,
-            "Conviction": conviction,
-            "WeightedScore": round(weighted_score, 2),
-            "Error": None,
-        }
+        hist = yf.Ticker(ticker).history(period="5d", auto_adjust=False)
+        if hist is not None and not hist.empty and "Close" in hist.columns:
+            close = hist["Close"].dropna()
+            if not close.empty:
+                return float(close.iloc[-1]), None
+        return None, "No price history"
     except Exception as e:
-        return {
-            "Ticker": ticker.replace(".NS", ""),
-            "Sector": None,
-            "ScreenVerdict": VERDICT_FAIL_NODATA,
-            "Conviction": 0,
-            "WeightedScore": 0.0,
-            "Error": str(e),
-        }
+        return None, str(e)
+
+
+def get_yahoo_fastinfo(ticker: str) -> Tuple[Dict[str, Any], Optional[str]]:
+    try:
+        tk = yf.Ticker(ticker)
+        fi = getattr(tk, "fast_info", None)
+        if fi is None:
+            return {}, "fast_info unavailable"
+        out = {}
+        for key in ["market_cap", "last_price", "previous_close"]:
+            try:
+                out[key] = fi.get(key)
+            except Exception:
+                try:
+                    out[key] = getattr(fi, key)
+                except Exception:
+                    pass
+        return out, None
+    except Exception as e:
+        return {}, str(e)
+
+
+def evaluate_stock(ticker: str, fundamentals_lookup: Dict[str, Any], shareholding_lookup: Dict[str, Dict], stock_master_df: pd.DataFrame) -> Dict[str, Any]:
+    base_ticker = ticker.replace(".NS", "").upper()
+    fund_row = fundamentals_lookup.get(base_ticker)
+    sh_data = shareholding_lookup.get(base_ticker)
+    errors = []
+
+    stock_row = None
+    if stock_master_df is not None and not stock_master_df.empty and "Ticker" in stock_master_df.columns:
+        tmp = stock_master_df.copy()
+        tmp["Ticker"] = tmp["Ticker"].astype(str).str.upper()
+        match = tmp[tmp["Ticker"] == base_ticker]
+        if not match.empty:
+            stock_row = match.iloc[0]
+
+    sector = None
+    sub_sector = None
+    if stock_row is not None:
+        sector = stock_row["Sector"] if "Sector" in stock_row.index else None
+        sub_sector = stock_row["SubSector"] if "SubSector" in stock_row.index else None
+
+    pe = pb = peg = ev_ebitda = None
+    roe = roce = roa = opm = revg = earng = None
+    ocf_pat = fcf_yield = de_ratio = None
+    price = None
+    mcap_cr = None
+
+    if fund_row is not None:
+        if "ROE_Latest" in fund_row.index:
+            roe = parse_percent_or_float(fund_row["ROE_Latest"])
+        if "ROCE_Latest" in fund_row.index:
+            roce = parse_percent_or_float(fund_row["ROCE_Latest"])
+        if "OPM_Latest" in fund_row.index:
+            opm = parse_percent_or_float(fund_row["OPM_Latest"])
+        if "Revenue_CAGR_AllYears" in fund_row.index:
+            revg = parse_percent_or_float(fund_row["Revenue_CAGR_AllYears"])
+        if "PAT_CAGR_AllYears" in fund_row.index:
+            earng = parse_percent_or_float(fund_row["PAT_CAGR_AllYears"])
+
+        for col, var_name in [
+            ("PE", "pe"),
+            ("PB", "pb"),
+            ("PEG", "peg"),
+            ("EV_EBITDA", "ev_ebitda"),
+            ("ROA_Latest", "roa"),
+            ("OCF_PAT", "ocf_pat"),
+            ("FCF_Yield", "fcf_yield"),
+            ("DebtToEquity", "de_ratio"),
+            ("MCap_Cr", "mcap_cr"),
+        ]:
+            if col in fund_row.index:
+                v = parse_percent_or_float(fund_row[col]) if var_name in ["roa", "fcf_yield"] else parse_float(fund_row[col])
+                if v is not None:
+                    if var_name == "pe":
+                        pe = v
+                    elif var_name == "pb":
+                        pb = v
+                    elif var_name == "peg":
+                        peg = v
+                    elif var_name == "ev_ebitda":
+                        ev_ebitda = v
+                    elif var_name == "roa":
+                        roa = v
+                    elif var_name == "ocf_pat":
+                        ocf_pat = v
+                    elif var_name == "fcf_yield":
+                        fcf_yield = v
+                    elif var_name == "de_ratio":
+                        de_ratio = v
+                    elif var_name == "mcap_cr":
+                        mcap_cr = v
+
+    fastinfo, fi_err = get_yahoo_fastinfo(ticker)
+    if fi_err:
+        errors.append(f"fast_info: {fi_err}")
+
+    if price is None:
+        price = parse_float(fastinfo.get("last_price")) or parse_float(fastinfo.get("previous_close"))
+
+    if mcap_cr is None:
+        mcap = parse_float(fastinfo.get("market_cap"))
+        if mcap is not None:
+            mcap_cr = mcap / 1e7
+
+    if price is None:
+        hist_price, hist_err = get_price_from_history(ticker)
+        if hist_err:
+            errors.append(f"history: {hist_err}")
+        price = hist_price
+
+    promoter_pct_nse = None
+    public_pct_nse = None
+    emp_trust_pct_nse = None
+    ownership_total_pct = None
+    ownership_data_valid = False
+    has_shareholding_data = False
+    sh_as_on_date = None
+    sh_revision_date = None
+    sh_action_link = None
+    shareholding_status = "Not available"
+
+    if sh_data is not None:
+        promoter_pct_nse = sh_data.get("PromoterPct_NSE")
+        public_pct_nse = sh_data.get("PublicPct_NSE")
+        emp_trust_pct_nse = sh_data.get("EmployeeTrustPct_NSE")
+        ownership_total_pct = sh_data.get("OwnershipTotalPct")
+        ownership_data_valid = sh_data.get("OwnershipDataValid", False)
+        has_shareholding_data = sh_data.get("HasShareholdingData", False)
+        sh_as_on_date = sh_data.get("ShareholdingAsOnDate")
+        sh_revision_date = sh_data.get("ShareholdingRevisionDate")
+        sh_action_link = sh_data.get("ShareholdingActionLink")
+        shareholding_status = "NSE CSV" if has_shareholding_data else "Not available"
+
+    if promoter_pct_nse is not None:
+        l4_share = ownership_data_valid and (promoter_pct_nse / 100.0) >= CONFIG["promoter_min"]
+        l4_data_missing = not has_shareholding_data
+        ownership_score = 1.0 if l4_share else 0.0
+    else:
+        l4_share = False
+        l4_data_missing = True
+        ownership_score = 0.0
+
+    quality_raw = approx_quality_score_from_metrics(roe, roa, ocf_pat, de_ratio, opm, revg)
+
+    l1_checks = [
+        pe is not None and pe < CONFIG["pe_max"],
+        peg is not None and peg < CONFIG["peg_max"],
+        ev_ebitda is not None and ev_ebitda < CONFIG["ev_ebitda_max"],
+        pb is not None and pb < CONFIG["pb_max"],
+        mcap_cr is not None,
+    ]
+    l1_available = [pe is not None, peg is not None, ev_ebitda is not None, pb is not None, mcap_cr is not None]
+    l1_val = sum(l1_checks) >= 3
+    l1_data_missing = sum(l1_available) < 3
+
+    l2_checks = [
+        roce is not None and roce > CONFIG["roce_min"],
+        roe is not None and roe > CONFIG["roe_min"],
+        roa is not None and roa > CONFIG["roa_min"],
+        opm is not None and opm > CONFIG["opm_min"],
+        revg is not None and revg > CONFIG["rev_growth_min"],
+        earng is not None and earng > CONFIG["earn_growth_min"],
+    ]
+    l2_available = [roce is not None, roe is not None, roa is not None, opm is not None, revg is not None, earng is not None]
+    l2_prof = sum(l2_checks) >= 4
+    l2_data_missing = sum(l2_available) < 4
+
+    l3_data_missing = sum([ocf_pat is not None, fcf_yield is not None, de_ratio is not None]) < 2
+    l5_data_missing = sum([roe is not None, roa is not None, opm is not None, revg is not None]) < 3
+
+    l3_guard = (
+        (ocf_pat is not None and ocf_pat >= CONFIG["ocf_pat_min_guard"])
+        and
+        (de_ratio is None or de_ratio <= CONFIG["de_max_guard"])
+    )
+    l5_guard = quality_raw >= CONFIG["quality_min_guard"]
+
+    verdict = compute_screen_verdict(
+        l1_val, l2_prof, l3_guard, l4_share, l5_guard,
+        l1_data_missing, l2_data_missing, l3_data_missing, l4_data_missing, l5_data_missing
+    )
+
+    l3_score = 0.0
+    if ocf_pat is not None:
+        if ocf_pat >= 1.2:
+            l3_score += 1.0
+        elif ocf_pat >= 0.8:
+            l3_score += 0.8
+        elif ocf_pat >= 0.5:
+            l3_score += 0.5
+
+    if fcf_yield is not None:
+        if fcf_yield >= 0.05:
+            l3_score += 1.0
+        elif fcf_yield >= 0.03:
+            l3_score += 0.7
+        elif fcf_yield > 0:
+            l3_score += 0.4
+
+    if de_ratio is not None:
+        if de_ratio <= 0.3:
+            l3_score += 1.0
+        elif de_ratio <= 0.5:
+            l3_score += 0.8
+        elif de_ratio <= 1.0:
+            l3_score += 0.4
+
+    l3_score = min(l3_score / 3.0, 1.0)
+    l5_score = min(quality_raw / 7.0, 1.0) if quality_raw is not None else 0.0
+
+    conviction = sum([l1_val, l2_prof, l3_guard, l4_share, l5_guard])
+    hard_pass = bool(l2_prof and l3_guard and l5_guard and conviction >= 4)
+
+    weighted_score = 0.0
+    weighted_score += 8 if l1_val else 0
+    weighted_score += 14 if l2_prof else 0
+    weighted_score += 4 * (
+        1.0 if ocf_pat is not None and ocf_pat >= 0.8 else
+        0.5 if ocf_pat is not None and ocf_pat >= 0.5 else 0.0
+    )
+    weighted_score += 3 * (
+        1.0 if fcf_yield is not None and fcf_yield >= 0.03 else
+        0.5 if fcf_yield is not None and fcf_yield > 0 else 0.0
+    )
+    weighted_score += 4 * (
+        1.0 if de_ratio is not None and de_ratio <= 0.5 else
+        0.5 if de_ratio is not None and de_ratio <= 1.0 else
+        0.0 if de_ratio is not None else 0.25
+    )
+    weighted_score += 4 * l5_score
+    weighted_score += 3 * ownership_score
+
+    fail_reasons = []
+    if not l1_val and not l1_data_missing:
+        fail_reasons.append("L1 Valuation")
+    if not l2_prof and not l2_data_missing:
+        fail_reasons.append("L2 Profitability")
+    if not l3_guard and not l3_data_missing:
+        fail_reasons.append("L3 Guardrail")
+    if not l4_share and not l4_data_missing:
+        fail_reasons.append("L4 Shareholding")
+    if not l5_guard and not l5_data_missing:
+        fail_reasons.append("L5 Guardrail")
+
+    data_gap_reasons = []
+    if l1_data_missing:
+        data_gap_reasons.append("L1")
+    if l2_data_missing:
+        data_gap_reasons.append("L2")
+    if l3_data_missing:
+        data_gap_reasons.append("L3")
+    if l4_data_missing:
+        data_gap_reasons.append("L4")
+    if l5_data_missing:
+        data_gap_reasons.append("L5")
+
+    error_msg = "; ".join([e for e in errors if e]) if errors else None
+
+    return {
+        "Ticker": base_ticker,
+        "Sector": sector,
+        "SubSector": sub_sector,
+        "ScreenVerdict": verdict,
+        "FailReasons": "; ".join(fail_reasons) if fail_reasons else None,
+        "DataGapReasons": "; ".join(data_gap_reasons) if data_gap_reasons else None,
+        "Price": price,
+        "MCap_Cr": round(mcap_cr, 1) if mcap_cr is not None else None,
+        "PE": round(pe, 2) if pe is not None else None,
+        "PB": round(pb, 2) if pb is not None else None,
+        "PEG": round(peg, 2) if peg is not None else None,
+        "ROCE_pct": round(roce * 100, 1) if roce is not None else None,
+        "ROE_pct": round(roe * 100, 1) if roe is not None else None,
+        "ROA_pct": round(roa * 100, 1) if roa is not None else None,
+        "OPM_pct": round(opm * 100, 1) if opm is not None else None,
+        "RevGrowth_pct": round(revg * 100, 1) if revg is not None else None,
+        "EarnGrowth_pct": round(earng * 100, 1) if earng is not None else None,
+        "OCF_PAT": round(ocf_pat, 2) if ocf_pat is not None else None,
+        "FCFYield_pct": round(fcf_yield * 100, 2) if fcf_yield is not None else None,
+        "DebtToEquity_raw": round(de_ratio, 2) if de_ratio is not None else None,
+        "PromoterPct_NSE": promoter_pct_nse,
+        "PublicPct_NSE": public_pct_nse,
+        "EmployeeTrustPct_NSE": emp_trust_pct_nse,
+        "OwnershipTotalPct": ownership_total_pct,
+        "OwnershipDataValid": ownership_data_valid,
+        "ShareholdingStatus": shareholding_status,
+        "ShareholdingAsOnDate": sh_as_on_date,
+        "ShareholdingRevisionDate": sh_revision_date,
+        "QualityScore_raw": quality_raw,
+        "L1_Val": l1_val,
+        "L2_Prof": l2_prof,
+        "L3_Guard": l3_guard,
+        "L5_Guard": l5_guard,
+        "L3_Score_0to1": round(l3_score, 3),
+        "L5_Score_0to1": round(l5_score, 3),
+        "L4_Share": l4_share,
+        "L1_DataMissing": l1_data_missing,
+        "L2_DataMissing": l2_data_missing,
+        "L3_DataMissing": l3_data_missing,
+        "L4_DataMissing": l4_data_missing,
+        "L5_DataMissing": l5_data_missing,
+        "Conviction": conviction,
+        "WeightedScore": round(weighted_score, 2),
+        "Pass": hard_pass,
+        "HasFundamentals": fund_row is not None,
+        "HasShareholdingData": has_shareholding_data,
+        "ShareholdingActionLink": sh_action_link,
+        "Error": error_msg,
+    }
 
 
 def generate_research_note(row: pd.Series, sector_context_status: str) -> str:
@@ -495,6 +743,8 @@ def generate_research_note(row: pd.Series, sector_context_status: str) -> str:
         incomplete.append("FCF yield unavailable")
     if row.get("FCFYield_pct") is not None and not pd.isna(row.get("FCFYield_pct")) and row.get("FCFYield_pct") < 0:
         caution.append("Negative FCF yield; verify whether capex-led or structural")
+    if row.get("DataGapReasons"):
+        incomplete.append(f"Data gaps flagged in screen: {row.get('DataGapReasons')}")
 
     note = []
     note.append(f"# {row['Ticker']}")
@@ -590,15 +840,6 @@ def write_manual_email(pass_df: pd.DataFrame, intervention_map: Dict[str, List[s
     return ok, msg
 
 
-def load_csv_if_exists(path: Path) -> pd.DataFrame:
-    if path.exists():
-        try:
-            return pd.read_csv(path)
-        except Exception:
-            return pd.DataFrame()
-    return pd.DataFrame()
-
-
 def save_uploaded_files(files, folder: Path, prefix: str):
     folder.mkdir(parents=True, exist_ok=True)
     saved = []
@@ -653,20 +894,15 @@ def run_pipeline(manual_bhavcopy_file=None, manual_shareholding_file=None) -> Tu
         tickers = [f"{t}.NS" for t in universe_df.head(500)["Ticker"].tolist()]
         automation_flags["universe_mode"] = "bhavcopy"
 
-    stock_master_df = load_csv_if_exists(BASE_DIR / "stock_master.csv")
-    fundamentals_master_df = load_csv_if_exists(BASE_DIR / "fundamentals_master.csv")
-
-    fundamentals_lookup = {}
-    if not fundamentals_master_df.empty and "Ticker" in fundamentals_master_df.columns:
-        tmp = fundamentals_master_df.copy()
-        tmp["TickerKey"] = tmp["Ticker"].astype(str).str.upper()
-        fundamentals_lookup = {row["TickerKey"]: row for _, row in tmp.iterrows()}
+    stock_master_df = load_stock_master()
+    fundamentals_master_df = load_fundamentals_master()
+    fundamentals_lookup = build_fundamentals_lookup(fundamentals_master_df)
 
     shareholding_lookup = {}
     if sh.path and sh.path.exists() and sh.path.suffix.lower() == ".csv":
         shareholding_lookup = build_shareholding_lookup(load_csv_if_exists(sh.path), stock_master_df)
 
-    rows = [evaluate_stock(t, fundamentals_lookup, shareholding_lookup) for t in tickers]
+    rows = [evaluate_stock(t, fundamentals_lookup, shareholding_lookup, stock_master_df) for t in tickers]
     df = pd.DataFrame(rows)
 
     if not df.empty:
@@ -714,6 +950,8 @@ def run_pipeline(manual_bhavcopy_file=None, manual_shareholding_file=None) -> Tu
         "universe_mode": automation_flags["universe_mode"],
         "pass_count": int((df["ScreenVerdict"] == VERDICT_PASS).sum()) if not df.empty else 0,
         "datagap_count": int((df["ScreenVerdict"] == VERDICT_PASS_DATAGAP).sum()) if not df.empty else 0,
+        "genuine_fail_count": int((df["ScreenVerdict"] == VERDICT_FAIL_GENUINE).sum()) if not df.empty else 0,
+        "nodata_count": int((df["ScreenVerdict"] == VERDICT_FAIL_NODATA).sum()) if not df.empty else 0,
     }
     (run_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2, default=str))
 
@@ -812,10 +1050,14 @@ def render_app():
 
     notes_dir = latest / "notes"
     if notes_dir.exists():
+        notes = sorted(notes_dir.glob("*.md"))
         st.subheader("Research notes")
-        for note in sorted(notes_dir.glob("*.md")):
-            with st.expander(note.stem):
-                st.markdown(note.read_text())
+        if not notes:
+            st.info("No research notes generated because there are no clean PASS names in the latest run.")
+        else:
+            for note in notes:
+                with st.expander(note.stem):
+                    st.markdown(note.read_text())
 
 
 def main():
