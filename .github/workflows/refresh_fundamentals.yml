@@ -1,0 +1,39 @@
+name: Refresh fundamentals_master
+
+on:
+  schedule:
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build fundamentals_master.csv
+        run: |
+          python scripts/build_fundamentals_master.py
+
+      - name: Commit updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add fundamentals_master.csv
+          git diff --cached --quiet || git commit -m "Refresh fundamentals_master.csv"
+          git push
