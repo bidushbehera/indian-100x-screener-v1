@@ -34,6 +34,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add fundamentals_master.csv
+          git add fundamentals_master.csv fundamentals_master_failures.csv || true
           git diff --cached --quiet || git commit -m "Refresh fundamentals_master.csv"
           git push
