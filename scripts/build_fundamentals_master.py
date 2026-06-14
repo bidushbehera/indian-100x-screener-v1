@@ -54,49 +54,65 @@ def load_nse_universe():
         raise ValueError("Ticker symbol column not found in bhavcopy")
 
     eq = df.copy()
+
     if instr_col and series_col:
-        eq = eq[(eq[instr_col].astype(str).str.upper() == "STK") &
-                (eq[series_col].astype(str).str.upper() == "EQ")]
+        eq = eq[
+            (eq[instr_col].astype(str).str.upper() == "STK") &
+            (eq[series_col].astype(str).str.upper() == "EQ")
+        ]
     elif series_col:
         eq = eq[eq[series_col].astype(str).str.upper() == "EQ"]
 
     eq["Ticker"] = eq[symbol_col].astype(str).str.upper().str.strip()
-    if name_col:
-        eq["CompanyName"] = eq[name_col].astype(str).str.upper().str.strip()
-    else:
-        eq["CompanyName"] = ""
+    eq["CompanyName"] = (
+        eq[name_col].astype(str).str.upper().str.strip()
+        if name_col else ""
+    )
 
-    # Keyword filter on ticker + company name
     bad_keywords = [
-        "ETF", "BEES", "IETF", "INDEX", "GOLD", "SILVER", "LIQUID", "GILT",
-        "SENSEX", "NIFTY", "BANKEX", "MOMENTUM", "QUALITY", "VALUE",
-        "LOWVOL", "ALPHA", "NEXT50", "MIDCAP", "SMALLCAP", "PSUBANK",
-        "INFRA", "REALTY", "CASE", "ADD", "BETA", "MOM", "MOSL",
-        "HEALTHCARE", "PHARMA", "DEFENCE", "ENERGY", "METAL", "AUTO",
-        "FMCG", "IT", "TECH", "INTERNET", "MULTIGRP", "MULTICAP",
-        "TECH", "NV20", "MON100", "MON50", "NIFTY1", "PSUB", "PVTBAN"
+        "ETF", "ETFADD", "BEES", "IETF", "INDEX", "NIFTY", "SENSEX", "BANKEX",
+        "MIDCAP", "SMALLCAP", "MID150", "SMALL250", "NEXT50", "TOP100",
+        "TOP20", "VALUE", "QUALITY", "MOMENTUM", "LOWVOL", "ALPHA", "BETA",
+        "DIVIDEND", "MULTICAP", "CONSUMER", "PHARMA", "HEALTH", "HEALTHCARE",
+        "AUTO", "METAL", "ENERGY", "PSE", "PSU", "BANK", "BANKPSU",
+        "FINSERVICE", "INFRA", "REALTY", "IT", "TECH", "INTERNET",
+        "GOLD", "SILVER", "LIQUID", "GILT", "COMMODITIES", "SCHEME",
+        "FUND", "GSEC", "SDL", "BOND", "EQUAL", "SELECT", "THEMATIC",
+        "DEFENCE", "RAIL", "IPO", "LOWVOL", "MNC", "NV20", "CASE"
     ]
+
+    bad_exact = {
+        "ABSL10BANK","ABSLNN50ET","ABSLPSE","AONETOTAL","BANKPSU","CHEMICAL",
+        "CONSUMER","DIVIDEND","ECAPINSURE","ELM250","EMULTIMQ","EQUAL200",
+        "EQUAL50","EVINDIA","GROWWCAPM","GROWWCHEM","GROWWDEFNC","GROWWEV",
+        "GROWWLIQID","GROWWLOVOL","GROWWMC150","GROWWN200","GROWWNET",
+        "GROWWNXT50","GROWWPOWER","GROWWPSE","GROWWRAIL","GROWWRLTY",
+        "GROWWSC250","GROWWSLVR","GSEC10ABSL","HDFCBSE500","HDFCMID150",
+        "HDFCNIF100","HDFCNIFBAN","HDFCQUAL","HDFCSML250","ICICIB22",
+        "LICNFNHGP","LICNMID100","MAFANG","MASPTOP50","MID150","MIDSMALL",
+        "MNC","MOBANK10","MOGSEC","MOHEALTH","MOIPO","MONQ50","MOPSE",
+        "MOSERVICE","MOSMALL250","MSCI360","MSCIINDIA","NPBET","PVTBKGROWW",
+        "SBIBPB","SBINMID150","SMALL250","TATSILV","TOP20"
+    }
 
     def looks_non_equity(row):
         ticker = str(row["Ticker"])
         cname = str(row["CompanyName"])
         text = f"{ticker} {cname}"
+
+        if ticker in bad_exact:
+            return True
+
         for k in bad_keywords:
             if k in text:
                 return True
+
         return False
 
     eq = eq[~eq.apply(looks_non_equity, axis=1)].copy()
 
-    # Additional post-filter: remove tickers with no MCap from Yahoo
-    # (those will be caught by drop later, but filter obvious non-stocks by pattern)
-    # Remove purely numeric tickers or tickers ending in typical ETF suffixes
-    import re
-    etf_pattern = re.compile(
-        r'(ETF|BEES|IETF|ADD$|BETA$|CASE$|FUND|SCHEME|GROWTH|NIFTY|SENSEX|GOLD|SILVER)',
-        re.IGNORECASE
-    )
-    eq = eq[~eq["Ticker"].apply(lambda t: bool(etf_pattern.search(str(t))))].copy()
+    eq = eq[eq["Ticker"].str.fullmatch(r"[A-Z0-9&\-]+", na=False)].copy()
+    eq = eq[eq["Ticker"].str.len().between(2, 15)].copy()
 
     eq = eq[["Ticker"]].drop_duplicates().reset_index(drop=True)
     return eq
