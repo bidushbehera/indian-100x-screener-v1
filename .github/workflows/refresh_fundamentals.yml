@@ -30,10 +30,11 @@ jobs:
         run: |
           python scripts/build_fundamentals_master.py
 
-      - name: Commit updated CSV
+        - name: Commit updated CSV
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add fundamentals_master.csv fundamentals_master_failures.csv || true
           git diff --cached --quiet || git commit -m "Refresh fundamentals_master.csv"
+          git pull --rebase origin main
           git push
