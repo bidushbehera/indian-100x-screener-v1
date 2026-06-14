@@ -1,6 +1,6 @@
 # ============================================================
 # 100X Screener V7 — Size-First Universe (Nano / Small / Both)
-# Step 2 version: structured output pack
+# Full revised version with session-state persistence
 # ============================================================
 
 import time
@@ -11,6 +11,42 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(page_title="100X Screener V7 — Size-First", layout="wide")
+
+# ── Session state bootstrap ─────────────────────────────────
+if "screen_has_run" not in st.session_state:
+    st.session_state.screen_has_run = False
+
+if "screened_df_full" not in st.session_state:
+    st.session_state.screened_df_full = pd.DataFrame()
+
+if "screened_df_filtered" not in st.session_state:
+    st.session_state.screened_df_filtered = pd.DataFrame()
+
+if "compact_summary_df" not in st.session_state:
+    st.session_state.compact_summary_df = pd.DataFrame()
+
+if "output_views" not in st.session_state:
+    st.session_state.output_views = {}
+
+if "failure_reason_summary" not in st.session_state:
+    st.session_state.failure_reason_summary = pd.DataFrame()
+
+if "band_breakdown" not in st.session_state:
+    st.session_state.band_breakdown = pd.DataFrame()
+
+if "fail_detail_df" not in st.session_state:
+    st.session_state.fail_detail_df = pd.DataFrame()
+
+if "screen_stats" not in st.session_state:
+    st.session_state.screen_stats = {
+        "screened_count": 0,
+        "shown_count": 0,
+        "n_pass": 0,
+        "n_datagap": 0,
+        "n_genuine": 0,
+        "n_nodata": 0,
+        "size_choice": None,
+    }
 
 # ── Market-cap band definitions (in ₹ Crore) ────────────────
 MCAP_BANDS = {
@@ -1099,8 +1135,9 @@ with st.expander("ℹ️ How the quality weights work", expanded=False):
 - **Ownership high (4–5):** Pushes promoter-backed names up — only active when data exists.
 """)
 
-if st.button("🚀 Run live screen", type="primary"):
+run_clicked = st.button("🚀 Run live screen", type="primary")
 
+if run_clicked:
     fundamentals_master_df = load_fundamentals_master(uploaded_fundamentals_file)
     if fundamentals_master_df.empty:
         st.warning(
@@ -1110,6 +1147,7 @@ if st.button("🚀 Run live screen", type="primary"):
     else:
         st.info(f"Fundamentals master loaded: {len(fundamentals_master_df)} rows.")
 
+    global shareholding_lookup
     if uploaded_sh_file is not None:
         try:
             uploaded_sh_file.seek(0)
@@ -1306,32 +1344,17 @@ if st.button("🚀 Run live screen", type="primary"):
     n_genuine = int((summary_df_before_pass_filter["ScreenVerdict"] == VERDICT_FAIL_GENUINE).sum())
     n_nodata = int((summary_df_before_pass_filter["ScreenVerdict"] == VERDICT_FAIL_NODATA).sum())
 
-    st.success(
-        f"Screen complete — {screened_count} screened, {len(df)} stock(s) shown "
-        f"| Band: {size_choice}"
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("✅ PASS", n_pass)
-    c2.metric("⚠️ PASS (Data gaps)", n_datagap)
-    c3.metric("❌ FAIL (Genuine)", n_genuine)
-    c4.metric("🔲 FAIL (No data)", n_nodata)
-
     band_breakdown = (
         summary_df_before_pass_filter
         .groupby("MCap_Band")["Ticker"]
         .count()
         .reset_index()
         .rename(columns={"Ticker": "Count"})
-    )
-    if not band_breakdown.empty:
-        st.subheader("MCap band breakdown of screened universe")
-        st.dataframe(band_breakdown, use_container_width=True)
+    ) if not summary_df_before_pass_filter.empty else pd.DataFrame()
 
     failure_reason_summary = build_failure_reason_summary(summary_df_before_pass_filter)
-    if not failure_reason_summary.empty:
-        st.subheader("Failure reason summary")
-        st.dataframe(failure_reason_summary, use_container_width=True)
+    output_views = build_output_views(summary_df_before_pass_filter)
+    compact_summary_df = build_compact_summary(summary_df_before_pass_filter)
 
     fail_detail = summary_df_before_pass_filter[
         summary_df_before_pass_filter["ScreenVerdict"] == VERDICT_FAIL_GENUINE
@@ -1339,7 +1362,54 @@ if st.button("🚀 Run live screen", type="primary"):
         "Ticker", "MCap_Cr", "MCap_Band", "Conviction", "ConvictionPct",
         "WeightedScore", "FailReasons", "DataGapReasons",
         "L3_Score_0to1", "L5_Score_0to1",
-    ]].copy()
+    ]].copy() if not summary_df_before_pass_filter.empty else pd.DataFrame()
+
+    st.session_state.screen_has_run = True
+    st.session_state.screened_df_full = summary_df_before_pass_filter.copy()
+    st.session_state.screened_df_filtered = df.copy()
+    st.session_state.compact_summary_df = compact_summary_df.copy()
+    st.session_state.output_views = {k: v.copy() for k, v in output_views.items()}
+    st.session_state.failure_reason_summary = failure_reason_summary.copy()
+    st.session_state.band_breakdown = band_breakdown.copy()
+    st.session_state.fail_detail_df = fail_detail.copy()
+    st.session_state.screen_stats = {
+        "screened_count": screened_count,
+        "shown_count": len(df),
+        "n_pass": n_pass,
+        "n_datagap": n_datagap,
+        "n_genuine": n_genuine,
+        "n_nodata": n_nodata,
+        "size_choice": size_choice,
+    }
+
+if st.session_state.screen_has_run:
+    stats = st.session_state.screen_stats
+    output_views = st.session_state.output_views
+    compact_summary_df = st.session_state.compact_summary_df
+    df = st.session_state.screened_df_filtered
+    summary_df_before_pass_filter = st.session_state.screened_df_full
+    failure_reason_summary = st.session_state.failure_reason_summary
+    band_breakdown = st.session_state.band_breakdown
+    fail_detail = st.session_state.fail_detail_df
+
+    st.success(
+        f"Screen complete — {stats['screened_count']} screened, {stats['shown_count']} stock(s) shown "
+        f"| Band: {stats['size_choice']}"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("✅ PASS", stats["n_pass"])
+    c2.metric("⚠️ PASS (Data gaps)", stats["n_datagap"])
+    c3.metric("❌ FAIL (Genuine)", stats["n_genuine"])
+    c4.metric("🔲 FAIL (No data)", stats["n_nodata"])
+
+    if not band_breakdown.empty:
+        st.subheader("MCap band breakdown of screened universe")
+        st.dataframe(band_breakdown, use_container_width=True)
+
+    if not failure_reason_summary.empty:
+        st.subheader("Failure reason summary")
+        st.dataframe(failure_reason_summary, use_container_width=True)
 
     if not fail_detail.empty:
         st.subheader("Failed names summary")
@@ -1348,17 +1418,14 @@ if st.button("🚀 Run live screen", type="primary"):
             use_container_width=True,
         )
 
-    output_views = build_output_views(summary_df_before_pass_filter)
-    compact_summary_df = build_compact_summary(summary_df_before_pass_filter)
-
     st.subheader("Output pack summary")
     o1, o2, o3, o4, o5, o6 = st.columns(6)
-    o1.metric("Full universe", len(output_views["full"]))
-    o2.metric("PASS", len(output_views["pass_strict"]))
-    o3.metric("PASS data gaps", len(output_views["pass_datagap"]))
-    o4.metric("FAIL genuine", len(output_views["fail_genuine"]))
-    o5.metric("FAIL no data", len(output_views["fail_nodata"]))
-    o6.metric("Research further", len(output_views["research_further"]))
+    o1.metric("Full universe", len(output_views.get("full", pd.DataFrame())))
+    o2.metric("PASS", len(output_views.get("pass_strict", pd.DataFrame())))
+    o3.metric("PASS data gaps", len(output_views.get("pass_datagap", pd.DataFrame())))
+    o4.metric("FAIL genuine", len(output_views.get("fail_genuine", pd.DataFrame())))
+    o5.metric("FAIL no data", len(output_views.get("fail_nodata", pd.DataFrame())))
+    o6.metric("Research further", len(output_views.get("research_further", pd.DataFrame())))
 
     st.subheader("Compact summary")
     if not compact_summary_df.empty:
@@ -1378,19 +1445,19 @@ if st.button("🚀 Run live screen", type="primary"):
     with d1:
         st.download_button(
             "⬇️ Download full universe CSV",
-            data=to_csv_bytes(output_views["full"]),
+            data=to_csv_bytes(output_views.get("full", pd.DataFrame())),
             file_name="100x_screener_full_universe.csv",
             mime="text/csv",
         )
         st.download_button(
             "⬇️ Download PASS only CSV",
-            data=to_csv_bytes(output_views["pass_strict"]),
+            data=to_csv_bytes(output_views.get("pass_strict", pd.DataFrame())),
             file_name="100x_screener_pass_only.csv",
             mime="text/csv",
         )
         st.download_button(
             "⬇️ Download PASS + data gaps CSV",
-            data=to_csv_bytes(output_views["pass_all"]),
+            data=to_csv_bytes(output_views.get("pass_all", pd.DataFrame())),
             file_name="100x_screener_pass_plus_datagaps.csv",
             mime="text/csv",
         )
@@ -1404,29 +1471,48 @@ if st.button("🚀 Run live screen", type="primary"):
     with d2:
         st.download_button(
             "⬇️ Download PASS data gaps only CSV",
-            data=to_csv_bytes(output_views["pass_datagap"]),
+            data=to_csv_bytes(output_views.get("pass_datagap", pd.DataFrame())),
             file_name="100x_screener_pass_datagaps_only.csv",
             mime="text/csv",
         )
         st.download_button(
             "⬇️ Download FAIL genuine CSV",
-            data=to_csv_bytes(output_views["fail_genuine"]),
+            data=to_csv_bytes(output_views.get("fail_genuine", pd.DataFrame())),
             file_name="100x_screener_fail_genuine.csv",
             mime="text/csv",
         )
         st.download_button(
             "⬇️ Download FAIL no data CSV",
-            data=to_csv_bytes(output_views["fail_nodata"]),
+            data=to_csv_bytes(output_views.get("fail_nodata", pd.DataFrame())),
             file_name="100x_screener_fail_nodata.csv",
             mime="text/csv",
         )
         st.download_button(
             "⬇️ Download research further CSV",
-            data=to_csv_bytes(output_views["research_further"]),
+            data=to_csv_bytes(output_views.get("research_further", pd.DataFrame())),
             file_name="100x_screener_research_further.csv",
             mime="text/csv",
         )
 
+    if st.button("🧹 Clear stored results"):
+        st.session_state.screen_has_run = False
+        st.session_state.screened_df_full = pd.DataFrame()
+        st.session_state.screened_df_filtered = pd.DataFrame()
+        st.session_state.compact_summary_df = pd.DataFrame()
+        st.session_state.output_views = {}
+        st.session_state.failure_reason_summary = pd.DataFrame()
+        st.session_state.band_breakdown = pd.DataFrame()
+        st.session_state.fail_detail_df = pd.DataFrame()
+        st.session_state.screen_stats = {
+            "screened_count": 0,
+            "shown_count": 0,
+            "n_pass": 0,
+            "n_datagap": 0,
+            "n_genuine": 0,
+            "n_nodata": 0,
+            "size_choice": None,
+        }
+        st.rerun()
 else:
     st.info(
         "👆 Upload files in the sidebar, choose your cap size band, "
