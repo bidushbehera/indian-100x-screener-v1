@@ -54,7 +54,6 @@ def load_nse_universe():
         raise ValueError("Ticker symbol column not found in bhavcopy")
 
     eq = df.copy()
-
     if instr_col and series_col:
         eq = eq[(eq[instr_col].astype(str).str.upper() == "STK") &
                 (eq[series_col].astype(str).str.upper() == "EQ")]
@@ -62,26 +61,43 @@ def load_nse_universe():
         eq = eq[eq[series_col].astype(str).str.upper() == "EQ"]
 
     eq["Ticker"] = eq[symbol_col].astype(str).str.upper().str.strip()
-
     if name_col:
         eq["CompanyName"] = eq[name_col].astype(str).str.upper().str.strip()
     else:
         eq["CompanyName"] = ""
 
+    # Keyword filter on ticker + company name
     bad_keywords = [
-        "ETF", "BEES", "INDEX", "GOLD", "SILVER", "LIQUID", "GILT",
+        "ETF", "BEES", "IETF", "INDEX", "GOLD", "SILVER", "LIQUID", "GILT",
         "SENSEX", "NIFTY", "BANKEX", "MOMENTUM", "QUALITY", "VALUE",
         "LOWVOL", "ALPHA", "NEXT50", "MIDCAP", "SMALLCAP", "PSUBANK",
-        "INFRA", "REALTY"
+        "INFRA", "REALTY", "CASE", "ADD", "BETA", "MOM", "MOSL",
+        "HEALTHCARE", "PHARMA", "DEFENCE", "ENERGY", "METAL", "AUTO",
+        "FMCG", "IT", "TECH", "INTERNET", "MULTIGRP", "MULTICAP",
+        "TECH", "NV20", "MON100", "MON50", "NIFTY1", "PSUB", "PVTBAN"
     ]
 
     def looks_non_equity(row):
         ticker = str(row["Ticker"])
         cname = str(row["CompanyName"])
         text = f"{ticker} {cname}"
-        return any(k in text for k in bad_keywords)
+        for k in bad_keywords:
+            if k in text:
+                return True
+        return False
 
     eq = eq[~eq.apply(looks_non_equity, axis=1)].copy()
+
+    # Additional post-filter: remove tickers with no MCap from Yahoo
+    # (those will be caught by drop later, but filter obvious non-stocks by pattern)
+    # Remove purely numeric tickers or tickers ending in typical ETF suffixes
+    import re
+    etf_pattern = re.compile(
+        r'(ETF|BEES|IETF|ADD$|BETA$|CASE$|FUND|SCHEME|GROWTH|NIFTY|SENSEX|GOLD|SILVER)',
+        re.IGNORECASE
+    )
+    eq = eq[~eq["Ticker"].apply(lambda t: bool(etf_pattern.search(str(t))))].copy()
+
     eq = eq[["Ticker"]].drop_duplicates().reset_index(drop=True)
     return eq
 
