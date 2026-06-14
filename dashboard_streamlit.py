@@ -153,11 +153,33 @@ def approx_quality_score(info: Dict[str, Any]) -> int:
 # DATA LOADING
 # ═══════════════════════════════════════════════════════════
 
-def load_fundamentals_master() -> pd.DataFrame:
+def load_fundamentals_master(uploaded_fundamentals_file) -> pd.DataFrame:
+    if uploaded_fundamentals_file is None:
+        st.warning("No fundamentals_master.csv uploaded yet.")
+        return pd.DataFrame()
+
     try:
-        return pd.read_csv("fundamentals_master.csv")
+        uploaded_fundamentals_file.seek(0)
+        df = pd.read_csv(uploaded_fundamentals_file)
+        df.columns = [str(c).strip() for c in df.columns]
+
+        if "Ticker" not in df.columns:
+            st.error("Uploaded fundamentals file must contain a 'Ticker' column.")
+            return pd.DataFrame()
+
+        df["Ticker"] = (
+            df["Ticker"]
+            .astype(str)
+            .str.upper()
+            .str.replace(".NS", "", regex=False)
+            .str.strip()
+        )
+
+        st.info(f"Loaded uploaded fundamentals file with {len(df)} rows.")
+        return df
+
     except Exception as e:
-        st.warning(f"Could not load fundamentals_master.csv: {e}")
+        st.error(f"Could not read uploaded fundamentals file: {e}")
         return pd.DataFrame()
 
 
